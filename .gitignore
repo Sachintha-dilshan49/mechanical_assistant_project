@@ -1,14 +1,65 @@
+# ============================================
 # Python
-venv/
+# ============================================
 __pycache__/
 *.py[cod]
-*.egg-info/
-.env
+*$py.class
+*.so
+.Python
 
-# Generated databases (rebuilt from source)
+# ============================================
+# Virtual environments (NEVER commit these)
+# ============================================
+venv/
+env/
+ENV/
+.venv/
+
+# ============================================
+# Generated databases (regenerate from source)
+# ============================================
 data/chroma_db/
 data/materials.db
 
-# OS
+# ============================================
+# IDE settings
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ============================================
+# OS files
+# ============================================
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# ============================================
+# Environment & secrets (NEVER commit these)
+# ============================================
+.env
+.env.local
+*.key
+api_keys.txt
+credentials.json
+
+# ============================================
+# Logs and temp files
+# ============================================
+*.log
+*.tmp
+*.bak
+
+# ============================================
+# Jupyter notebooks (if you use them)
+# ============================================
+.ipynb_checkpoints/
+
+# ============================================
+# Build artifacts
+# ============================================
+build/
+dist/
+*.egg-info/
