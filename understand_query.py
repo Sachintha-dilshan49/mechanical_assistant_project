@@ -116,12 +116,31 @@ def understand_query(user_query: str) -> dict:
     """
     full_prompt = SYSTEM_PROMPT + f"\n\nUser query: {user_query}\n\nOutput:"
     
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=full_prompt
-    )
+   # Retry logic for transient Gemini errors
+    import time
+    max_retries = 3
+    response = None
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=full_prompt
+            )
+            break  # success
+        except Exception as e:
+            error_str = str(e)
+            if "503" in error_str or "429" in error_str or "UNAVAILABLE" in error_str:
+                wait = 5 * (attempt + 1)
+                print(f"      Gemini busy. Retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
     
-    # Clean up the response — sometimes models wrap JSON in ```json ... ```
+    if response is None:
+        print("ERROR: Gemini unavailable after retries")
+        return None
+    
+    # Clean up the response...
     text = response.text.strip()
     if text.startswith("```"):
         # Remove markdown fences
@@ -160,7 +179,7 @@ if __name__ == "__main__":
         result = understand_query(q)
         if result:
             print(f"  Semantic query: {result.get('semantic_query')}")
-            print(f"  Filters:        {json.dumps(result.get('filters'), indent=18)[18:]}")
+            print(f"  Filters:        {json.dumps(result.get('filters'))}")
             print(f"  Constraints:    {result.get('extracted_constraints')}")
             print(f"  Reasoning:      {result.get('reasoning')}")
     

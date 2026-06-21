@@ -123,7 +123,14 @@ for _, row in materials_df.iterrows():
         "fatigue_rating":               int(row['fatigue_rating']),
         "sources":                      str(row['sources']),
         "stress_table_id":              str(row['stress_table_id']) if pd.notna(row['stress_table_id']) else '',
+        "density_kg_m3":                int(row['density_kg_m3']),
+        "elastic_modulus_GPa":          int(row['elastic_modulus_GPa']),
+        "key_warnings":                 str(row['key_warnings']),
+        "typical_applications":         str(row['typical_applications']),
+        "weldability_notes":            str(row['weldability_notes']),
+        "approx_cost_usd_per_kg":       str(row['approx_cost_usd_per_kg']),
     }
+    
     metadatas.append(metadata)
 
 print("    Embedding text and storing... (first run downloads model)")

@@ -23,21 +23,26 @@ collection = chroma_client.get_collection(name=COLLECTION_NAME)
 def find_materials(query_text, filters=None, top_k=3):
     """
     Search ChromaDB for materials matching a text query and optional filters.
-    
-    query_text: plain English description of what the student needs
-    filters:    dict of metadata constraints, e.g., {"corrosion_seawater": {"$gte": 4}}
-    top_k:      how many results to return
-    
-    Returns a list of dicts with material info.
+    Filters with multiple conditions are auto-wrapped with $and for ChromaDB.
     """
     print(f"\n[Search] '{query_text}'")
     if filters:
         print(f"[Filter] {filters}")
     
+    # Normalize filters: ChromaDB requires $and/$or for multi-condition filters
+    chroma_filter = None
+    if filters:
+        if len(filters) == 1:
+            # Single filter — use as-is
+            chroma_filter = filters
+        else:
+            # Multiple filters — wrap in $and
+            chroma_filter = {"$and": [{k: v} for k, v in filters.items()]}
+    
     results = collection.query(
         query_texts=[query_text],
         n_results=top_k,
-        where=filters    # metadata filter (e.g., corrosion >= 4)
+        where=chroma_filter
     )
     
     # Format the results into a clean list of dicts
@@ -47,16 +52,36 @@ def find_materials(query_text, filters=None, top_k=3):
         return materials
     
     for i, mat_id in enumerate(results['ids'][0]):
+        meta = results['metadatas'][0][i]
         materials.append({
-            "material_id":      mat_id,
-            "common_name":      results['metadatas'][0][i]['common_name'],
-            "yield_strength":   results['metadatas'][0][i]['yield_strength_MPa'],
-            "max_temp":         results['metadatas'][0][i]['max_service_temp_C'],
-            "weldability":      results['metadatas'][0][i]['weldability'],
-            "corrosion_sea":    results['metadatas'][0][i]['corrosion_seawater'],
-            "stress_table_id":  results['metadatas'][0][i]['stress_table_id'],
-            "sources":          results['metadatas'][0][i]['sources'],
-            "relevance_score":  1 - results['distances'][0][i],  # convert distance to similarity
+            "material_id":              mat_id,
+            "common_name":              meta.get('common_name', ''),
+            "material_class":           meta.get('material_class', ''),
+            "condition":                meta.get('condition', ''),
+            "yield_strength_MPa":       meta.get('yield_strength_MPa'),
+            "ultimate_tensile_strength_MPa": meta.get('ultimate_tensile_strength_MPa'),
+            "max_service_temp_C":       meta.get('max_service_temp_C'),
+            "min_service_temp_C":       meta.get('min_service_temp_C'),
+            "corrosion_seawater":       meta.get('corrosion_seawater'),
+            "corrosion_acidic":         meta.get('corrosion_acidic'),
+            "corrosion_alkaline":       meta.get('corrosion_alkaline'),
+            "corrosion_atmospheric":    meta.get('corrosion_atmospheric'),
+            "corrosion_high_temp":      meta.get('corrosion_high_temp'),
+            "weldability":              meta.get('weldability'),
+            "machinability_index":      meta.get('machinability_index'),
+            "cost_class":               meta.get('cost_class'),
+            "availability":             meta.get('availability'),
+            "fatigue_rating":           meta.get('fatigue_rating'),
+            "stress_table_id":          meta.get('stress_table_id', ''),
+            "sources":                  meta.get('sources', ''),
+            "description_text":         results['documents'][0][i],
+            "relevance_score":          1 - results['distances'][0][i],
+            "density_kg_m3":            meta.get('density_kg_m3'),
+            "elastic_modulus_GPa":      meta.get('elastic_modulus_GPa'),
+            "key_warnings":             meta.get('key_warnings', ''),
+            "typical_applications":     meta.get('typical_applications', ''),
+            "weldability_notes":        meta.get('weldability_notes', ''),
+            "approx_cost_usd_per_kg":   meta.get('approx_cost_usd_per_kg', ''),
         })
     
     return materials
