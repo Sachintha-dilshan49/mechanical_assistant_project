@@ -1,5 +1,5 @@
 # app.py
-# Streamlit web UI for the Material Selection Assistant
+# Streamlit web UI with chat history (display only)
 
 import streamlit as st
 from reason import reason_about_query
@@ -14,6 +14,13 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------
+# INITIALIZE SESSION STATE (the memory)
+# -----------------------------------------------------------------
+# This block only runs once per browser session
+if "history" not in st.session_state:
+    st.session_state.history = []   # list of {"query": "...", "answer": "..."}
+
+# -----------------------------------------------------------------
 # HEADER
 # -----------------------------------------------------------------
 st.title("🔧 Mechanical Material Selection Assistant")
@@ -24,7 +31,7 @@ st.markdown(
 )
 
 # -----------------------------------------------------------------
-# SIDEBAR — info and example queries
+# SIDEBAR
 # -----------------------------------------------------------------
 with st.sidebar:
     st.header("About this tool")
@@ -57,47 +64,81 @@ with st.sidebar:
         "- 2 Alloy steels (4130, 4140)\n"
         "- 2 Aluminum alloys (2024-T3, 5052-H32)"
     )
+    
+    st.markdown("---")
+    st.subheader("Session")
+    st.markdown(f"**Queries asked:** {len(st.session_state.history)}")
+    
+    # Clear history button
+    if st.button("Clear history", type="secondary"):
+        st.session_state.history = []
+        st.rerun()  # refresh the page
 
 # -----------------------------------------------------------------
-# MAIN — input + results
+# DISPLAY PAST QUERIES (newest at top, oldest at bottom)
 # -----------------------------------------------------------------
+if st.session_state.history:
+    st.markdown("---")
+    st.subheader("📜 Previous queries this session")
+    
+    # Iterate in reverse so newest appears first
+    for i, entry in enumerate(reversed(st.session_state.history)):
+        # Use an expander so old queries are collapsed by default
+        query_num = len(st.session_state.history) - i
+        with st.expander(f"Q{query_num}: {entry['query'][:80]}{'...' if len(entry['query']) > 80 else ''}"):
+            st.markdown(f"**Your query:** {entry['query']}")
+            st.markdown("---")
+            st.markdown(entry['answer'])
 
-# Query input
+# -----------------------------------------------------------------
+# INPUT AREA — at the bottom
+# -----------------------------------------------------------------
+st.markdown("---")
+st.subheader("Ask a new question")
+
 user_query = st.text_area(
     "Describe your design conditions:",
     placeholder="e.g., I need a material for a marine pump shaft that must handle 250 MPa at 150°C",
     height=100,
+    key="query_input",
 )
 
-# Number of results selector
 top_k = st.slider("Number of materials to recommend", min_value=2, max_value=5, value=3)
 
-# Submit button
 submit = st.button("Find Materials", type="primary")
 
 # -----------------------------------------------------------------
-# Run the pipeline when submitted
+# RUN PIPELINE WHEN SUBMITTED
 # -----------------------------------------------------------------
 if submit:
     if not user_query.strip():
         st.warning("Please enter a query first.")
     else:
-        # Show a spinner while the pipeline runs
         with st.spinner("Thinking… (this may take 5–15 seconds)"):
             try:
                 answer = reason_about_query(user_query, top_k=top_k)
                 
-                # Display the answer
+                # Save to history
+                st.session_state.history.append({
+                    "query": user_query,
+                    "answer": answer,
+                })
+                
+                # Show the fresh answer immediately at the bottom
                 st.markdown("---")
+                st.subheader("📋 Result")
                 st.markdown(answer)
                 
-                # Footer note
                 st.markdown("---")
                 st.caption(
                     "Recommendations are based on a curated database of mechanical "
                     "engineering references. For critical applications, validate "
                     "with a qualified engineer."
                 )
+                
+                # Hint to scroll up
+                st.info("💡 This query has been added to your history above.")
+                
             except Exception as e:
                 st.error(f"Something went wrong: {e}")
                 st.info(
