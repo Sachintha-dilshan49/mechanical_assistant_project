@@ -1,218 +1,269 @@
 # reason.py
-# The end-to-end pipeline: query → understanding → retrieval → reasoning
-# This is the complete RAG system.
+# End-to-end RAG pipeline with graceful fallback when Gemini is unavailable.
+# Returns structured data for the UI to render as cards.
 
 import os
 import json
+import time
 from dotenv import load_dotenv
 from google import genai
 
-# Import functions from our existing scripts
 from understand_query import understand_query
 from retrieve import find_materials, get_allowable_stress
 
-# Load API key
+# -----------------------------------------------------------------
+# SETUP
+# -----------------------------------------------------------------
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
 
 # -----------------------------------------------------------------
-# THE REASONING PROMPT — strict grounding rules
+# REASONING PROMPT (LLM only writes summary + per-material reasoning)
 # -----------------------------------------------------------------
 REASONING_PROMPT_TEMPLATE = """You are a senior mechanical engineer advising a student on material selection.
 
-CRITICAL RULES — these are non-negotiable:
-1. You MUST use ONLY the materials data provided below. Do NOT use any knowledge outside this data.
-2. Every property value you mention MUST come from the data block, never invented.
-3. Every claim MUST include a citation from the "sources" field of the material.
-4. If the data is insufficient to answer something, SAY SO. Do not guess.
-5. Always include the "key_warnings" for any recommended material.
-6. If the student gave a temperature and we looked up exact stress, mention it explicitly.
+CRITICAL RULES:
+1. Use ONLY the materials data provided below. No outside knowledge.
+2. Every claim must come from the data. Cite the source.
+3. If data is insufficient, say so.
+4. For each material, write a 1-2 sentence reasoning ONLY (not full properties — the UI will show those).
 
 The student asked: "{user_query}"
 
 Our retrieval system understood this as:
 - Semantic query: {semantic_query}
 - Filters applied: {filters}
-- Constraints extracted: {constraints}
 
-Materials retrieved from database (ranked by relevance):
-
+Materials retrieved (already ranked):
 {materials_block}
 
 {stress_block}
 
-Now write a concise engineering recommendation in this format:
-
-## Recommended Materials
-
-### 1. [Material Name]
-- **Why this fits:** [1-2 sentences explaining match to the query]
-- **Key properties:** [yield strength, max temp, corrosion ratings — only what's relevant]
-- **Watch out for:** [the key_warnings from the data]
-- **Sources:** [list the citations]
-
-### 2. [Material Name] (if applicable)
-[same format]
-
-## Summary
-[2-3 sentences comparing the options and suggesting which is best for the stated use case]
-
-Be concise. No fluff. Engineering-grade communication.
+Output STRICT JSON in this exact format (no markdown fences, no other text):
+{{
+    "overall_summary": "<2-3 sentence comparison and recommendation>",
+    "material_reasoning": {{
+        "<material_id_1>": "<1-2 sentences explaining why this material fits the query>",
+        "<material_id_2>": "<1-2 sentences>"
+    }}
+}}
 """
 
 
-def format_material_for_prompt(material_dict: dict) -> str:
+def format_material_for_prompt(m: dict) -> str:
+    """Convert a retrieved material dict to a text block for the LLM."""
+    return (
+        f"--- {m.get('common_name')} (id: {m.get('material_id')}) ---\n"
+        f"  yield_strength_MPa: {m.get('yield_strength_MPa')}\n"
+        f"  max_service_temp_C: {m.get('max_service_temp_C')}\n"
+        f"  density_kg_m3: {m.get('density_kg_m3')}\n"
+        f"  corrosion_seawater: {m.get('corrosion_seawater')}/5\n"
+        f"  weldability: {m.get('weldability')}/5\n"
+        f"  machinability_index: {m.get('machinability_index')}\n"
+        f"  key_warnings: {m.get('key_warnings', '')}\n"
+        f"  sources: {m.get('sources', '')}\n"
+    )
+
+
+# -----------------------------------------------------------------
+# THREE-LAYER FALLBACK FOR GEMINI
+# -----------------------------------------------------------------
+def call_gemini_with_fallback(prompt: str):
     """
-    Convert a material dict from retrieve.py into a detailed text block for the LLM.
-    Includes all properties the LLM needs to reason and warn correctly.
+    Try gemini-2.5-flash first, fall back to gemini-2.5-flash-lite if it fails.
+    Returns (text, warning_message). text is None if all attempts failed.
     """
-    lines = [
-        f"--- {material_dict.get('common_name', 'Unknown')} ---",
-        f"  material_id: {material_dict.get('material_id', '')}",
-        f"  material_class: {material_dict.get('material_class', '')}",
-        f"  condition: {material_dict.get('condition', '')}",
-        f"  yield_strength_MPa: {material_dict.get('yield_strength_MPa', 'N/A')}",
-        f"  ultimate_tensile_strength_MPa: {material_dict.get('ultimate_tensile_strength_MPa', 'N/A')}",
-        f"  density_kg_m3: {material_dict.get('density_kg_m3', 'N/A')}",
-        f"  elastic_modulus_GPa: {material_dict.get('elastic_modulus_GPa', 'N/A')}",
-        f"  max_service_temp_C: {material_dict.get('max_service_temp_C', 'N/A')}",
-        f"  min_service_temp_C: {material_dict.get('min_service_temp_C', 'N/A')}",
-        f"  corrosion_seawater: {material_dict.get('corrosion_seawater', 'N/A')}/5",
-        f"  corrosion_acidic: {material_dict.get('corrosion_acidic', 'N/A')}/5",
-        f"  corrosion_alkaline: {material_dict.get('corrosion_alkaline', 'N/A')}/5",
-        f"  corrosion_atmospheric: {material_dict.get('corrosion_atmospheric', 'N/A')}/5",
-        f"  corrosion_high_temp: {material_dict.get('corrosion_high_temp', 'N/A')}/5",
-        f"  weldability: {material_dict.get('weldability', 'N/A')}/5",
-        f"  weldability_notes: {material_dict.get('weldability_notes', '')}",
-        f"  machinability_index: {material_dict.get('machinability_index', 'N/A')}",
-        f"  cost_class: {material_dict.get('cost_class', 'N/A')}/5",
-        f"  approx_cost_usd_per_kg: {material_dict.get('approx_cost_usd_per_kg', '')}",
-        f"  availability: {material_dict.get('availability', 'N/A')}/5",
-        f"  fatigue_rating: {material_dict.get('fatigue_rating', 'N/A')}/5",
-        f"  typical_applications: {material_dict.get('typical_applications', '')}",
-        f"  key_warnings: {material_dict.get('key_warnings', '')}",
-        f"  sources: {material_dict.get('sources', '')}",
-        f"  relevance_score: {material_dict.get('relevance_score', 0):.2f}",
+    models_to_try = [
+        ("gemini-2.5-flash", None),
+        ("gemini-2.5-flash-lite", "Used the lite model (main model busy) - quality may be slightly lower."),
     ]
-    return "\n".join(lines)
-
-
-def reason_about_query(user_query: str, top_k: int = 3) -> str:
-    """
-    The full RAG pipeline. Takes a user query, returns a final answer string.
-    """
-    print("\n" + "=" * 70)
-    print(f"USER QUERY: {user_query}")
-    print("=" * 70)
     
-    # ----- Step 1: Understand the query -----
-    print("\n[1/4] Understanding query with Gemini...")
-    understood = understand_query(user_query)
+    for model_name, fallback_note in models_to_try:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                return response.text, fallback_note
+            except Exception as e:
+                error_str = str(e)
+                if "503" in error_str or "429" in error_str or "UNAVAILABLE" in error_str:
+                    wait = 3 * (attempt + 1)
+                    print(f"  {model_name} busy (attempt {attempt + 1}/2). Waiting {wait}s...")
+                    time.sleep(wait)
+                else:
+                    raise
+        print(f"  {model_name} unavailable. Trying next model...")
+    
+    return None, "AI summary unavailable - Gemini is overloaded. Showing database results only."
+
+
+def build_fallback_summary(materials: list, query: str) -> dict:
+    """
+    Build a basic summary from retrieval data alone, without LLM.
+    Used when Gemini is completely unavailable.
+    """
+    if not materials:
+        return {"overall_summary": "", "material_reasoning": {}}
+    
+    top = materials[0]
+    summary = (
+        f"Found {len(materials)} candidate materials matching your query. "
+        f"The top match is {top.get('common_name')}. "
+        f"Database results are shown below - review the property cards "
+        f"to compare materials. (AI-written summary unavailable due to service load.)"
+    )
+    
+    reasoning = {}
+    for mat in materials:
+        parts = []
+        if mat.get("corrosion_seawater", 0) >= 4:
+            parts.append("good seawater resistance")
+        if mat.get("weldability", 0) >= 4:
+            parts.append("easily weldable")
+        if mat.get("machinability_index", 0) >= 70:
+            parts.append("highly machinable")
+        if mat.get("yield_strength_MPa", 0) >= 500:
+            parts.append("high strength")
+        if mat.get("cost_class") == 1:
+            parts.append("low cost")
+        
+        if parts:
+            reasoning[mat["material_id"]] = (
+                f"Matched the query with: {', '.join(parts)}. "
+                f"See typical applications and warnings below for details."
+            )
+        else:
+            reasoning[mat["material_id"]] = (
+                "Retrieved as a candidate by semantic relevance. "
+                "Review properties and warnings below."
+            )
+    
+    return {"overall_summary": summary, "material_reasoning": reasoning}
+
+
+# -----------------------------------------------------------------
+# MAIN PIPELINE
+# -----------------------------------------------------------------
+def reason_about_query(user_query: str, top_k: int = 3) -> dict:
+    """
+    Full RAG pipeline with graceful degradation.
+    Always returns materials if any matched; LLM summary is best-effort.
+    """
+    result = {
+        "query": user_query,
+        "understood": None,
+        "materials": [],
+        "stress_lookups": {},
+        "summary": "",
+        "reasoning": {},
+        "warning": None,
+        "error": None,
+    }
+    
+    # Step 1: Understand query (with fallback)
+    understood = None
+    try:
+        understood = understand_query(user_query)
+    except Exception as e:
+        print(f"  understand_query failed: {e}")
+    
     if not understood:
-        return "ERROR: Could not understand the query. Try rephrasing."
+        understood = {
+            "semantic_query": user_query,
+            "filters": {},
+            "extracted_constraints": {},
+            "reasoning": "Query understanding unavailable; using raw text for semantic search.",
+        }
+        result["warning"] = "Could not parse query structure - searched semantically only."
+    
+    result["understood"] = understood
     
     semantic_query = understood.get("semantic_query", user_query)
     filters = understood.get("filters", {})
     constraints = understood.get("extracted_constraints", {})
     
-    print(f"      Semantic query: {semantic_query}")
-    print(f"      Filters: {json.dumps(filters)}")
-    print(f"      Constraints: {constraints}")
-    
-    # ----- Step 2: Retrieve materials -----
-    print(f"\n[2/4] Searching database (top {top_k} results)...")
+    # Step 2: Retrieve materials
     materials = find_materials(
         query_text=semantic_query,
         filters=filters if filters else None,
         top_k=top_k
     )
-    
     if not materials:
-        # Retry without filters in case they were too restrictive
-        print("      No matches with filters — retrying without filters")
+        # Retry without filters if too restrictive
         materials = find_materials(query_text=semantic_query, top_k=top_k)
-    
     if not materials:
-        return "No materials in the database match this query. Try broadening your criteria."
+        result["error"] = "No materials in the database match this query."
+        return result
+    result["materials"] = materials
     
-    print(f"      Found {len(materials)} candidate materials")
-    
-    # ----- Step 3: Look up exact stress if temperature was given -----
-    stress_block = ""
+    # Step 3: Stress lookups (database only, never fails on LLM)
     temp_C = constraints.get("temperature_C")
     if temp_C is not None:
-        print(f"\n[3/4] Looking up allowable stress at {temp_C}°C for each candidate...")
-        stress_lines = ["Exact allowable stress lookups (from SQLite/ASME tables):"]
         for mat in materials:
             stress_table_id = mat.get("stress_table_id", "")
             if stress_table_id:
                 stress_info = get_allowable_stress(stress_table_id, float(temp_C))
                 if stress_info and stress_info.get("stress_MPa") is not None:
-                    interp_note = " (interpolated)" if stress_info.get("interpolated") else " (exact)"
-                    stress_lines.append(
-                        f"  - {mat['common_name']}: {stress_info['stress_MPa']} MPa "
-                        f"at {temp_C}°C{interp_note}, source: {stress_info['source']}"
-                    )
-                elif stress_info and stress_info.get("error"):
-                    stress_lines.append(f"  - {mat['common_name']}: {stress_info['error']}")
-            else:
-                stress_lines.append(f"  - {mat['common_name']}: no stress table available")
-        stress_block = "\n".join(stress_lines)
-    else:
-        print(f"\n[3/4] No temperature specified — skipping stress lookup")
+                    result["stress_lookups"][mat["material_id"]] = {
+                        "stress_MPa": stress_info["stress_MPa"],
+                        "source": stress_info["source"],
+                        "interpolated": stress_info.get("interpolated", False),
+                        "temperature_C": temp_C,
+                    }
     
-    # ----- Step 4: Reasoning step — Gemini writes the answer -----
-    print(f"\n[4/4] Asking Gemini to write the recommendation...")
-    
+    # Step 4: Try LLM reasoning, fall back if Gemini fails
     materials_block = "\n\n".join(format_material_for_prompt(m) for m in materials)
+    stress_block = ""
+    if result["stress_lookups"]:
+        stress_lines = [f"Stress at {temp_C}C:"]
+        for mat_id, info in result["stress_lookups"].items():
+            stress_lines.append(f"  - {mat_id}: {info['stress_MPa']} MPa")
+        stress_block = "\n".join(stress_lines)
     
     final_prompt = REASONING_PROMPT_TEMPLATE.format(
         user_query=user_query,
         semantic_query=semantic_query,
         filters=json.dumps(filters),
-        constraints=constraints,
         materials_block=materials_block,
-        stress_block=stress_block
+        stress_block=stress_block,
     )
     
-    # Retry logic for transient Gemini errors (503, 429, etc.)
-    import time
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=final_prompt
-            )
-            return response.text
-        except Exception as e:
-            error_str = str(e)
-            if "503" in error_str or "429" in error_str or "UNAVAILABLE" in error_str:
-                wait = 5 * (attempt + 1)  # 5s, 10s, 15s
-                print(f"      Gemini busy (attempt {attempt + 1}/{max_retries}). Retrying in {wait}s...")
-                time.sleep(wait)
-            else:
-                # Non-retryable error — re-raise immediately
-                raise
+    text, fallback_note = call_gemini_with_fallback(final_prompt)
     
-    return "ERROR: Gemini is temporarily unavailable. Try again in a few minutes."
+    if text:
+        try:
+            text = text.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                text = "\n".join(line for line in lines if not line.startswith("```"))
+            parsed = json.loads(text)
+            result["summary"] = parsed.get("overall_summary", "")
+            result["reasoning"] = parsed.get("material_reasoning", {})
+            if fallback_note:
+                result["warning"] = fallback_note
+        except json.JSONDecodeError:
+            # Malformed JSON from LLM - fall back to rule-based
+            fallback = build_fallback_summary(materials, user_query)
+            result["summary"] = fallback["overall_summary"]
+            result["reasoning"] = fallback["material_reasoning"]
+            result["warning"] = "AI returned malformed output - showing rule-based summary."
+    else:
+        # All Gemini attempts failed - use rule-based summary
+        fallback = build_fallback_summary(materials, user_query)
+        result["summary"] = fallback["overall_summary"]
+        result["reasoning"] = fallback["material_reasoning"]
+        result["warning"] = fallback_note or "AI summary unavailable. Showing database results only."
+    
+    return result
 
 
 # -----------------------------------------------------------------
-# DEMO: end-to-end test
+# DEMO (run from terminal)
 # -----------------------------------------------------------------
 if __name__ == "__main__":
-    test_queries = [
-        "I need a lightweight material for marine use",
-        "Material for a shaft that must handle 300 MPa stress at 200 degrees C",
-        "What material should I use for a food processing tank?",
-    ]
-    
-    for q in test_queries:
-        answer = reason_about_query(q, top_k=3)
-        print("\n" + "=" * 70)
-        print("FINAL ANSWER:")
-        print("=" * 70)
-        print(answer)
-        print()
+    out = reason_about_query("lightweight material for marine use", top_k=3)
+    print(json.dumps({k: v for k, v in out.items() if k != "materials"}, indent=2))
+    print(f"\nMaterials returned: {len(out['materials'])}")
