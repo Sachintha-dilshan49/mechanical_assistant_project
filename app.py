@@ -20,56 +20,74 @@ st.set_page_config(
 # =================================================================
 st.markdown("""
 <style>
+/* Calm, low-contrast design — muted neutrals, generous spacing, few accents. */
 .material-card {
-    background-color: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1rem;
+    background-color: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 14px;
+    padding: 1.5rem 1.7rem;
+    margin-bottom: 1.1rem;
+}
+.sec {
+    font-size: 1.02rem;
+    font-weight: 600;
+    color: #c7ccd3;
+    letter-spacing: 0.01em;
+    margin: 1.4rem 0 0.5rem;
 }
 .rank-badge {
     display: inline-block;
-    padding: 0.25rem 0.75rem;
-    border-radius: 12px;
+    padding: 0.12rem 0.55rem;
+    border-radius: 8px;
     font-weight: 600;
-    font-size: 0.875rem;
+    font-size: 0.72rem;
+    letter-spacing: 0.02em;
     margin-right: 0.5rem;
+    background-color: rgba(255, 255, 255, 0.07);
+    color: #aeb4bd;
+    vertical-align: middle;
 }
-.rank-1 { background-color: #FFD700; color: #1a1a1a; }
-.rank-2 { background-color: #C0C0C0; color: #1a1a1a; }
-.rank-3 { background-color: #CD7F32; color: #1a1a1a; }
-.rank-other { background-color: rgba(255,255,255,0.1); color: #888; }
-
 .prop-pill {
     display: inline-block;
-    padding: 0.35rem 0.75rem;
+    padding: 0.28rem 0.65rem;
     margin: 0.2rem 0.3rem 0.2rem 0;
-    background-color: rgba(100, 150, 255, 0.15);
-    border-radius: 16px;
-    font-size: 0.875rem;
-    border: 1px solid rgba(100, 150, 255, 0.3);
-}
-.warning-box {
-    background-color: rgba(255, 165, 0, 0.08);
-    border-left: 3px solid #ff9800;
-    padding: 0.75rem 1rem;
-    border-radius: 4px;
-    margin-top: 0.75rem;
-    font-size: 0.9rem;
-}
-.reasoning-box {
-    background-color: rgba(76, 175, 80, 0.08);
-    border-left: 3px solid #4caf50;
-    padding: 0.75rem 1rem;
-    border-radius: 4px;
-    margin-top: 0.75rem;
-}
-.source-tag {
+    background-color: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
     font-size: 0.8rem;
-    color: #888;
-    margin-top: 0.5rem;
-    font-family: monospace;
+    color: #c0c5cc;
 }
+/* Unified subtle note (stress lookups, reasoning) */
+.note {
+    background-color: rgba(255, 255, 255, 0.025);
+    border-left: 3px solid rgba(255, 255, 255, 0.16);
+    padding: 0.7rem 1rem;
+    border-radius: 4px;
+    margin-top: 0.7rem;
+    font-size: 0.9rem;
+    color: #c0c5cc;
+}
+.note-accent { border-left-color: #7f9ea6; }
+.warn {
+    background-color: rgba(205, 160, 95, 0.06);
+    border-left: 3px solid rgba(205, 160, 95, 0.55);
+    padding: 0.7rem 1rem;
+    border-radius: 4px;
+    margin-top: 0.7rem;
+    font-size: 0.88rem;
+    color: #c9b491;
+}
+/* Family safety banners — visible but not alarming */
+.banner {
+    padding: 0.6rem 0.9rem;
+    border-radius: 6px;
+    margin: 0.5rem 0;
+    font-size: 0.86rem;
+    font-weight: 500;
+}
+.banner-danger { background: rgba(190, 110, 110, 0.10); border-left: 3px solid #be6e6e; color: #d29a9a; }
+.banner-warn   { background: rgba(200, 150, 90, 0.10);  border-left: 3px solid #c8964a; color: #cbab82; }
+.muted { color: #8b9098; font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -117,41 +135,33 @@ def is_family(mat, prefix):
     return str(mat.get("material_class", "")).startswith(prefix)
 
 
-def rating_emoji(value, max_value=5):
-    """Convert a 1-5 rating (int / float / NOT_FOUND) to colored circles."""
+def color_for_rating(value):
+    """Muted color for a 1-5 rating (desaturated, easy on the eyes)."""
     v = rint(value)
     if v is None:
-        return "—"
-    v = max(0, min(max_value, v))
-    return "🟢" * v + "⚪" * (max_value - v)
+        return "#7c8088"
+    v = max(1, min(5, v))
+    return ["#b08080", "#b09280", "#b3ad80", "#9bb084", "#86ab8c"][v - 1]
 
 
-def rating_label(value):
-    """Convert a 1-5 rating to a text label."""
-    labels = ["—", "Poor", "Fair", "Moderate", "Good", "Excellent"]
+def rating_bar(value, max_value=5):
+    """A small muted progress bar for a 1-5 rating, or 'N/A'."""
     v = rint(value)
-    return labels[v] if v else "—"
+    if v is None:
+        return '<span class="muted">N/A</span>'
+    pct = int(round(max(0, min(v, max_value)) / max_value * 100))
+    c = color_for_rating(v)
+    return (
+        '<div style="display:flex;align-items:center;gap:0.5rem;">'
+        '<div style="flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,0.06);overflow:hidden;">'
+        f'<div style="width:{pct}%;height:100%;background:{c};border-radius:3px;"></div></div>'
+        f'<span class="muted" style="min-width:1.8rem;text-align:right;">{v}/5</span></div>'
+    )
 
 
 def rank_badge(rank):
-    """Return HTML for the rank badge (gold/silver/bronze/etc)."""
-    if rank == 1:
-        return '<span class="rank-badge rank-1">🥇 #1 Match</span>'
-    elif rank == 2:
-        return '<span class="rank-badge rank-2">🥈 #2 Match</span>'
-    elif rank == 3:
-        return '<span class="rank-badge rank-3">🥉 #3 Match</span>'
-    else:
-        return f'<span class="rank-badge rank-other">#{rank}</span>'
-
-
-def color_for_rating(value):
-    """Return color based on 1-5 rating."""
-    v = rint(value)
-    if v is None:
-        return "#888"
-    v = max(1, min(5, v))
-    return ["#ff5252", "#ff9800", "#ffc107", "#8bc34a", "#4caf50"][v - 1]
+    """A single muted rank chip — no gold/silver/bronze."""
+    return f'<span class="rank-badge">#{rank}</span>'
 
 
 # =================================================================
@@ -166,10 +176,10 @@ if "last_result" not in st.session_state:
 # =================================================================
 # HEADER
 # =================================================================
-st.title("🔧 Mechanical Material Selection Assistant")
-st.markdown(
-    "Describe your design conditions. Get ranked materials with verified data "
-    "from Shigley, ASME, Cardarelli, Outokumpu, ESAB, and Machinery's Handbook."
+st.title("Material Selection Assistant")
+st.caption(
+    "Describe your design conditions — get ranked materials with verified "
+    "properties and citations. Press Enter to search."
 )
 
 
@@ -177,40 +187,40 @@ st.markdown(
 # SIDEBAR
 # =================================================================
 with st.sidebar:
-    st.header("About")
     st.caption(
         "Every property value comes from a verified source. "
-        "The LLM only reasons — it cannot invent numbers."
+        "The model only reasons — it cannot invent numbers."
     )
-    
+
+    top_k = st.slider("Recommendations to show", 2, 5, 3)
+
     st.markdown("---")
-    st.subheader("Try a query")
+    st.markdown("**Try a query**")
     examples = [
         "Lightweight material for marine use",
         "Shaft at 300 MPa stress and 200°C",
         "Low-friction plastic gear that resists fuels",
         "Brittle electrical insulator for 1000°C",
         "Stiff carbon-fibre material for an aerospace panel",
-        "UV-stable flame-retardant plastic enclosure",
-        "Cutting die that won't dull",
         "Titanium for medical implants",
     ]
     for ex in examples:
         if st.button(ex, use_container_width=True, key=f"ex_{ex}"):
-            st.session_state.example_query = ex
-    
+            # Fill the search box and run on the next rerun.
+            st.session_state.query_input = ex
+            st.session_state.run_now = True
+
     st.markdown("---")
-    st.subheader("Database")
-    st.caption(
-        "66 materials • 24 classes\n\n"
-        "**Metals:** Stainless • Carbon • Alloy • Tool steels • "
-        "Aluminum • Magnesium • Copper • Nickel • Cast iron • Titanium\n\n"
-        "**Non-metals:** Thermoplastics • Thermosets • "
-        "Ceramics (oxide/carbide/glass) • Composites (CFRP/GFRP/Kevlar)"
-    )
-    
-    st.markdown("---")
-    st.caption(f"📜 Queries this session: **{len(st.session_state.history)}**")
+    with st.expander("What's in the database"):
+        st.caption(
+            "66 materials • 24 classes\n\n"
+            "**Metals:** Stainless • Carbon • Alloy • Tool steels • "
+            "Aluminum • Magnesium • Copper • Nickel • Cast iron • Titanium\n\n"
+            "**Non-metals:** Thermoplastics • Thermosets • "
+            "Ceramics (oxide/carbide/glass) • Composites (CFRP/GFRP/Kevlar)"
+        )
+
+    st.caption(f"Queries this session: **{len(st.session_state.history)}**")
     if st.button("Clear history", use_container_width=True):
         st.session_state.history = []
         st.session_state.last_result = None
@@ -218,39 +228,33 @@ with st.sidebar:
 
 
 # =================================================================
-# INPUT
+# INPUT  (a form so pressing Enter submits — no mouse needed)
 # =================================================================
-default_query = st.session_state.pop("example_query", "")
-
-with st.container():
-    user_query = st.text_area(
+with st.form("query_form", clear_on_submit=False):
+    user_query = st.text_input(
         "Your query",
-        value=default_query,
-        placeholder="e.g., I need a material for a propeller shaft in seawater that can handle 250 MPa",
-        height=80,
+        key="query_input",
+        placeholder="e.g., material for a propeller shaft in seawater handling 250 MPa",
         label_visibility="collapsed",
     )
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        top_k = st.slider("Number of recommendations", 2, 5, 3)
-    with col2:
-        st.write("")  # spacer
-        submit = st.button("🔍 Find Materials", type="primary", use_container_width=True)
+    submit = st.form_submit_button("Find materials", type="primary")
 
 
 # =================================================================
 # RUN PIPELINE
 # =================================================================
-if submit:
+# Run on Enter / button, or when a sidebar example was clicked.
+run = submit or st.session_state.pop("run_now", False)
+
+if run:
     if not user_query.strip():
         st.warning("Please enter a query first.")
     else:
-        with st.spinner("Analyzing query, searching database, generating recommendations..."):
+        with st.spinner("Searching database and generating recommendations…"):
             result = reason_about_query(user_query, top_k=top_k)
-        
+
         st.session_state.last_result = result
-        
+
         # Save to history (only successful retrievals)
         if not result.get("error"):
             st.session_state.history.append({
@@ -270,14 +274,16 @@ def render_result(result):
     
     # --- Service warning (e.g. Gemini was degraded) ---
     if result.get("warning"):
-        st.warning(f"⚠️ {result['warning']}")
-    
+        st.caption(f"Note: {result['warning']}")
+
     # --- Overall summary ---
-    st.markdown("### 📋 Recommendation Summary")
-    st.info(result.get("summary", ""))
-    
+    summary = result.get("summary", "")
+    if summary:
+        st.markdown('<div class="sec">Summary</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="note note-accent">{summary}</div>', unsafe_allow_html=True)
+
     # --- Query understanding (collapsible) ---
-    with st.expander("🧠 How the system interpreted your query"):
+    with st.expander("How your query was interpreted"):
         understood = result.get("understood", {})
         st.markdown(f"**Reframed as:** *{understood.get('semantic_query', '')}*")
         
@@ -295,7 +301,7 @@ def render_result(result):
     # --- Comparison table (only if multiple materials) ---
     materials = result.get("materials", [])
     if len(materials) > 1:
-        st.markdown("### 📊 At-a-Glance Comparison")
+        st.markdown('<div class="sec">Comparison</div>', unsafe_allow_html=True)
         cols = st.columns(len(materials))
         for i, mat in enumerate(materials):
             with cols[i]:
@@ -318,8 +324,8 @@ def render_result(result):
                     )
     
     # --- Material cards ---
-    st.markdown("### 🔬 Detailed Recommendations")
-    
+    st.markdown('<div class="sec">Recommendations</div>', unsafe_allow_html=True)
+
     for i, mat in enumerate(materials):
         rank = i + 1
         mat_id = mat.get("material_id")
@@ -343,22 +349,20 @@ def render_result(result):
                 relevance = mat.get("relevance_score", 0)
                 st.caption(f"Relevance: {relevance:.2f}")
 
-            # --- Family safety banners ---
+            # --- Family safety banners (visible but calm) ---
             if is_family(mat, "ceramic_"):
                 st.markdown(
-                    '<div style="background-color:rgba(255,82,82,0.12);border-left:4px solid #ff5252;'
-                    'padding:0.6rem 1rem;border-radius:4px;margin:0.5rem 0;font-weight:700;color:#ff5252;">'
-                    '🧱 BRITTLE — design for compression, not tension. Zero ductility; '
-                    'fails catastrophically without warning.</div>',
+                    '<div class="banner banner-danger">'
+                    'Brittle — design for compression, not tension. Zero ductility; '
+                    'fails without warning.</div>',
                     unsafe_allow_html=True,
                 )
             if is_family(mat, "composite_"):
                 extra = (" Galvanic isolation from aluminium is required."
                          if mat.get("material_class") == "composite_cfrp" else "")
                 st.markdown(
-                    '<div style="background-color:rgba(255,152,0,0.12);border-left:4px solid #ff9800;'
-                    'padding:0.6rem 1rem;border-radius:4px;margin:0.5rem 0;font-weight:700;color:#ff9800;">'
-                    '🧭 DIRECTIONAL PROPERTIES — the quoted strength is along the fibre direction; '
+                    '<div class="banner banner-warn">'
+                    'Directional properties — quoted strength is along the fibre direction; '
                     'transverse strength is far lower. Design the layup for the real load path.'
                     + extra + '</div>',
                     unsafe_allow_html=True,
@@ -368,24 +372,24 @@ def render_result(result):
             pills = []
             if is_na(mat.get("yield_strength_MPa")) and not is_na(mat.get("ultimate_tensile_strength_MPa")):
                 # Ceramics/glass: no yield point — UTS is the flexural strength.
-                pills.append(f"💪 Flexural: {fmt(mat.get('ultimate_tensile_strength_MPa'), ' MPa')}")
+                pills.append(f"Flexural {fmt(mat.get('ultimate_tensile_strength_MPa'), ' MPa')}")
             else:
-                pills.append(f"💪 Yield: {fmt(mat.get('yield_strength_MPa'), ' MPa')}")
+                pills.append(f"Yield {fmt(mat.get('yield_strength_MPa'), ' MPa')}")
                 if not is_na(mat.get("ultimate_tensile_strength_MPa")):
-                    pills.append(f"💯 UTS: {fmt(mat.get('ultimate_tensile_strength_MPa'), ' MPa')}")
+                    pills.append(f"UTS {fmt(mat.get('ultimate_tensile_strength_MPa'), ' MPa')}")
             if not is_na(mat.get("hardness_HB")):
-                pills.append(f"🪨 HB: {fmt(mat.get('hardness_HB'))}")
+                pills.append(f"Hardness {fmt(mat.get('hardness_HB'))} HB")
             elif not is_na(mat.get("hardness_shore_d")):
-                pills.append(f"🪨 Shore D: {fmt(mat.get('hardness_shore_d'))}")
+                pills.append(f"Shore D {fmt(mat.get('hardness_shore_d'))}")
             if is_family(mat, "plastic_") and not is_na(mat.get("max_continuous_use_temp_C")):
-                pills.append(f"🌡️ Cont. use: {fmt(mat.get('max_continuous_use_temp_C'), '°C')}")
+                pills.append(f"Cont. use {fmt(mat.get('max_continuous_use_temp_C'), '°C')}")
             else:
-                pills.append(f"🌡️ Max: {fmt(mat.get('max_service_temp_C'), '°C')}")
-            pills.append(f"⚖️ {fmt(mat.get('density_kg_m3'), ' kg/m³')}")
+                pills.append(f"Max temp {fmt(mat.get('max_service_temp_C'), '°C')}")
+            pills.append(f"{fmt(mat.get('density_kg_m3'), ' kg/m³')}")
             if not is_na(mat.get("approx_cost_usd_per_kg")):
-                pills.append(f"💲 {mat.get('approx_cost_usd_per_kg')} USD/kg")
+                pills.append(f"${mat.get('approx_cost_usd_per_kg')}/kg")
             if not is_na(mat.get("machinability_index")):
-                pills.append(f"🔧 Mach: {fmt(mat.get('machinability_index'))}/100")
+                pills.append(f"Machinability {fmt(mat.get('machinability_index'))}/100")
             pills_html = "".join(f'<span class="prop-pill">{p}</span>' for p in pills)
             st.markdown(pills_html, unsafe_allow_html=True)
 
@@ -394,26 +398,22 @@ def render_result(result):
             # Corrosion / general ratings grid (5 columns)
             def render_rating_cell(col, label, val):
                 with col:
-                    st.markdown(f"**{label}**")
-                    r = rint(val)
-                    if r is not None:
-                        st.markdown(
-                            f'<div style="color:{color_for_rating(val)};font-weight:600;">'
-                            f'{rating_emoji(val)}<br>{rating_label(val)} ({r}/5)'
-                            f'</div>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.caption("N/A")
+                    st.markdown(
+                        f'<div class="muted" style="margin-bottom:0.25rem;">{label}</div>'
+                        + rating_bar(val),
+                        unsafe_allow_html=True,
+                    )
 
             rating_cols = st.columns(5)
             ratings = [
-                ("Seawater corr.", mat.get("corrosion_seawater")),
-                ("Acidic corr.", mat.get("corrosion_acidic")),
-                ("Alkaline corr.", mat.get("corrosion_alkaline")),
+                ("Seawater", mat.get("corrosion_seawater")),
+                ("Acidic", mat.get("corrosion_acidic")),
+                ("Alkaline", mat.get("corrosion_alkaline")),
                 ("Weldability", mat.get("weldability")),
                 ("Fatigue", mat.get("fatigue_rating")),
             ]
+            st.markdown('<div class="muted" style="margin-top:0.3rem;">Corrosion &amp; general (1–5)</div>',
+                        unsafe_allow_html=True)
             for col, (label, val) in zip(rating_cols, ratings):
                 render_rating_cell(col, label, val)
 
@@ -425,7 +425,8 @@ def render_result(result):
                 ("Fuels", mat.get("chemical_resistance_fuels")),
             ]
             if any(not is_na(v) for _, v in chem):
-                st.markdown("**🧪 Chemical Resistance**")
+                st.markdown('<div class="muted" style="margin-top:0.6rem;">Chemical resistance (1–5)</div>',
+                            unsafe_allow_html=True)
                 chem_cols = st.columns(4)
                 for col, (label, val) in zip(chem_cols, chem):
                     render_rating_cell(col, label, val)
@@ -435,16 +436,16 @@ def render_result(result):
             jm = mat.get("joining_method")
             if not is_na(jm):
                 for method in str(jm).split("|"):
-                    chips.append(f'<span class="prop-pill">🔗 {method.replace("_", " ")}</span>')
+                    chips.append(f'<span class="prop-pill">{method.replace("_", " ")}</span>')
             flam = mat.get("flammability")
             if not is_na(flam):
-                fc = {"V-0": "#4caf50", "V-1": "#8bc34a", "V-2": "#ffc107", "HB": "#ff9800"}.get(str(flam), "#888")
+                fc = {"V-0": "#86ab8c", "V-1": "#9bb084", "V-2": "#b3ad80", "HB": "#b09280"}.get(str(flam), "#7c8088")
                 chips.append(
-                    f'<span class="prop-pill" style="background-color:{fc}33;border-color:{fc};color:{fc};">'
-                    f'🔥 UL94 {flam}</span>'
+                    f'<span class="prop-pill" style="border-color:{fc};color:{fc};">'
+                    f'UL94 {flam}</span>'
                 )
             if not is_na(mat.get("uv_resistance")):
-                chips.append(f'<span class="prop-pill">☀️ UV: {rint(mat.get("uv_resistance"))}/5</span>')
+                chips.append(f'<span class="prop-pill">UV {rint(mat.get("uv_resistance"))}/5</span>')
             if chips:
                 st.write("")
                 st.markdown("".join(chips), unsafe_allow_html=True)
@@ -454,31 +455,27 @@ def render_result(result):
             if stress_info:
                 interp_note = " (interpolated)" if stress_info.get("interpolated") else " (exact)"
                 st.markdown(
-                    f'<div class="reasoning-box">'
-                    f'<b>⚡ Allowable stress at {stress_info.get("temperature_C")}°C:</b> '
+                    f'<div class="note">'
+                    f'<b>Allowable stress at {stress_info.get("temperature_C")}°C:</b> '
                     f'{stress_info.get("stress_MPa")} MPa{interp_note}<br>'
-                    f'<small>Source: {stress_info.get("source")}</small>'
+                    f'<span class="muted">Source: {stress_info.get("source")}</span>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
-            
+
             # LLM reasoning
             reasoning = result.get("reasoning", {}).get(mat_id, "")
             if reasoning:
                 st.markdown(
-                    f'<div class="reasoning-box">'
-                    f'<b>✅ Why this fits:</b> {reasoning}'
-                    f'</div>',
+                    f'<div class="note note-accent"><b>Why this fits:</b> {reasoning}</div>',
                     unsafe_allow_html=True
                 )
-            
+
             # Warnings
             warnings = mat.get("key_warnings", "")
-            if warnings:
+            if not is_na(warnings):
                 st.markdown(
-                    f'<div class="warning-box">'
-                    f'<b>⚠️ Watch out for:</b> {warnings}'
-                    f'</div>',
+                    f'<div class="warn"><b>Watch out for:</b> {warnings}</div>',
                     unsafe_allow_html=True
                 )
             
@@ -508,7 +505,7 @@ if st.session_state.last_result:
 # --- Show history (excluding most recent, already shown above) ---
 if st.session_state.history and len(st.session_state.history) > 1:
     st.markdown("---")
-    st.markdown("### 📜 Previous queries this session")
+    st.markdown('<div class="sec">Previous queries</div>', unsafe_allow_html=True)
     for i, entry in enumerate(reversed(st.session_state.history[:-1])):
         query_num = len(st.session_state.history) - i - 1
         title = entry['query'][:80] + ('...' if len(entry['query']) > 80 else '')
