@@ -182,7 +182,7 @@ if __name__ == "__main__":
         filters={"corrosion_seawater": {"$gte": 4}}
     )
     for mat in results:
-        print(f"  → {mat['common_name']} (corrosion: {mat['corrosion_sea']}/5)")
+        print(f"  → {mat['common_name']} (corrosion: {mat['corrosion_seawater']}/5)")
     
     # --------------------------------------------------
     # Test 3: Exact allowable stress lookup (in-table)

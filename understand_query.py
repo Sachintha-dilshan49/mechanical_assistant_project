@@ -35,7 +35,7 @@ The database has these filterable fields:
 - cost_class (integer 1-5) — 1 = cheapest, 5 = most expensive
 - availability (integer 1-5) — 5 = widely available
 - fatigue_rating (integer 1-5)
-- material_class (string) — one of: stainless_austenitic, carbon_steel_low, carbon_steel_medium, carbon_steel_high, alloy_steel, aluminum_wrought
+- material_class (string) — one of: stainless_austenitic, stainless_martensitic, stainless_ferritic, stainless_ph, carbon_steel_low, carbon_steel_medium, carbon_steel_high, alloy_steel, tool_steel, aluminum_wrought, aluminum_cast, copper_alloy, cast_iron, titanium_alloy
 
 Filter operators: $gte (>=), $lte (<=), $eq (==), $gt (>), $lt (<), $in (in list)
 
