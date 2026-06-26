@@ -231,8 +231,14 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
         stress_block=stress_block,
     )
     
-    text, fallback_note = call_gemini_with_fallback(final_prompt)
-    
+    try:
+        text, fallback_note = call_gemini_with_fallback(final_prompt)
+    except Exception as e:
+        # Non-transient Gemini error (bad request, auth, network, etc.).
+        # Never crash the pipeline — fall back to the rule-based summary.
+        print(f"  Gemini reasoning failed: {e}")
+        text, fallback_note = None, "AI summary unavailable - reasoning service errored. Showing database results only."
+
     if text:
         try:
             text = text.strip()

@@ -139,7 +139,13 @@ def understand_query(user_query: str) -> dict:
     if response is None:
         print("ERROR: Gemini unavailable after retries")
         return None
-    
+
+    # response.text is None when the model returns no text part
+    # (safety block, MAX_TOKENS, or a non-STOP finish reason).
+    if response.text is None:
+        print("ERROR: Gemini returned no text (possibly blocked or truncated)")
+        return None
+
     # Clean up the response...
     text = response.text.strip()
     if text.startswith("```"):
