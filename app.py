@@ -77,19 +77,60 @@ st.markdown("""
 # =================================================================
 # HELPER FUNCTIONS
 # =================================================================
+# -----------------------------------------------------------------
+# Value coercion — v3 data carries floats (e.g. 5.0) and the string
+# "NOT_FOUND" for properties that don't apply to a material's family.
+# -----------------------------------------------------------------
+def is_na(v):
+    """True when a value is missing or the NOT_FOUND sentinel."""
+    return v is None or (isinstance(v, str) and v.strip().upper() in ("", "NOT_FOUND"))
+
+
+def num(v):
+    """Float, or None if missing / NOT_FOUND."""
+    if is_na(v):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def rint(v):
+    """A 1-5 rating as an int, or None."""
+    n = num(v)
+    return int(round(n)) if n is not None else None
+
+
+def fmt(v, suffix="", nd=0):
+    """Format a numeric value with an optional unit suffix, or 'N/A'."""
+    n = num(v)
+    if n is None:
+        return "N/A"
+    if nd == 0 and float(n).is_integer():
+        return f"{int(n)}{suffix}"
+    return f"{n:.{nd}f}{suffix}"
+
+
+def is_family(mat, prefix):
+    """True if the material's class starts with prefix (e.g. 'ceramic_')."""
+    return str(mat.get("material_class", "")).startswith(prefix)
+
+
 def rating_emoji(value, max_value=5):
-    """Convert 1-5 rating to colored circles."""
-    if value is None:
+    """Convert a 1-5 rating (int / float / NOT_FOUND) to colored circles."""
+    v = rint(value)
+    if v is None:
         return "—"
-    filled = "🟢" * value
-    empty = "⚪" * (max_value - value)
-    return filled + empty
+    v = max(0, min(max_value, v))
+    return "🟢" * v + "⚪" * (max_value - v)
 
 
 def rating_label(value):
-    """Convert 1-5 rating to text label."""
+    """Convert a 1-5 rating to a text label."""
     labels = ["—", "Poor", "Fair", "Moderate", "Good", "Excellent"]
-    return labels[value] if value else "—"
+    v = rint(value)
+    return labels[v] if v else "—"
 
 
 def rank_badge(rank):
@@ -106,9 +147,11 @@ def rank_badge(rank):
 
 def color_for_rating(value):
     """Return color based on 1-5 rating."""
-    if value is None:
+    v = rint(value)
+    if v is None:
         return "#888"
-    return ["#ff5252", "#ff9800", "#ffc107", "#8bc34a", "#4caf50"][value - 1]
+    v = max(1, min(5, v))
+    return ["#ff5252", "#ff9800", "#ffc107", "#8bc34a", "#4caf50"][v - 1]
 
 
 # =================================================================
@@ -145,11 +188,12 @@ with st.sidebar:
     examples = [
         "Lightweight material for marine use",
         "Shaft at 300 MPa stress and 200°C",
-        "Bearing material for a slow pump",
-        "Engine block material",
+        "Low-friction plastic gear that resists fuels",
+        "Brittle electrical insulator for 1000°C",
+        "Stiff carbon-fibre material for an aerospace panel",
+        "UV-stable flame-retardant plastic enclosure",
         "Cutting die that won't dull",
         "Titanium for medical implants",
-        "Cheapest free-machining metal",
     ]
     for ex in examples:
         if st.button(ex, use_container_width=True, key=f"ex_{ex}"):
@@ -158,9 +202,11 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Database")
     st.caption(
-        "30 materials • 14 classes\n\n"
-        "Stainless • Carbon • Alloy • Tool steels • "
-        "Aluminum • Copper • Cast iron • Titanium"
+        "66 materials • 24 classes\n\n"
+        "**Metals:** Stainless • Carbon • Alloy • Tool steels • "
+        "Aluminum • Magnesium • Copper • Nickel • Cast iron • Titanium\n\n"
+        "**Non-metals:** Thermoplastics • Thermosets • "
+        "Ceramics (oxide/carbide/glass) • Composites (CFRP/GFRP/Kevlar)"
     )
     
     st.markdown("---")
@@ -255,10 +301,14 @@ def render_result(result):
             with cols[i]:
                 st.markdown(f"**{mat.get('common_name', '')}**")
                 st.caption(f"#{i+1} Match")
-                st.metric("Yield", f"{mat.get('yield_strength_MPa', 'N/A')} MPa")
-                st.metric("Max Temp", f"{mat.get('max_service_temp_C', 'N/A')}°C")
-                st.metric("Density", f"{mat.get('density_kg_m3', 'N/A')} kg/m³")
-                
+                # Ceramics/glass have no yield point — fall back to UTS (flexural).
+                if is_na(mat.get("yield_strength_MPa")) and not is_na(mat.get("ultimate_tensile_strength_MPa")):
+                    st.metric("Flexural (UTS)", fmt(mat.get("ultimate_tensile_strength_MPa"), " MPa"))
+                else:
+                    st.metric("Yield", fmt(mat.get("yield_strength_MPa"), " MPa"))
+                st.metric("Max Temp", fmt(mat.get("max_service_temp_C"), "°C"))
+                st.metric("Density", fmt(mat.get("density_kg_m3"), " kg/m³"))
+
                 stress_info = result.get("stress_lookups", {}).get(mat.get("material_id"))
                 if stress_info:
                     interp_label = " (interp)" if stress_info.get("interpolated") else ""
@@ -292,43 +342,113 @@ def render_result(result):
             with col_b:
                 relevance = mat.get("relevance_score", 0)
                 st.caption(f"Relevance: {relevance:.2f}")
-            
-            # Property pills
-            pills = [
-                f"💪 Yield: {mat.get('yield_strength_MPa')} MPa",
-                f"💯 UTS: {mat.get('ultimate_tensile_strength_MPa')} MPa",
-                f"🌡️ Max: {mat.get('max_service_temp_C')}°C",
-                f"⚖️ {mat.get('density_kg_m3')} kg/m³",
-                f"💲 Cost: {mat.get('approx_cost_usd_per_kg', '')} USD/kg",
-                f"🔧 Mach: {mat.get('machinability_index')}/100",
-            ]
+
+            # --- Family safety banners ---
+            if is_family(mat, "ceramic_"):
+                st.markdown(
+                    '<div style="background-color:rgba(255,82,82,0.12);border-left:4px solid #ff5252;'
+                    'padding:0.6rem 1rem;border-radius:4px;margin:0.5rem 0;font-weight:700;color:#ff5252;">'
+                    '🧱 BRITTLE — design for compression, not tension. Zero ductility; '
+                    'fails catastrophically without warning.</div>',
+                    unsafe_allow_html=True,
+                )
+            if is_family(mat, "composite_"):
+                extra = (" Galvanic isolation from aluminium is required."
+                         if mat.get("material_class") == "composite_cfrp" else "")
+                st.markdown(
+                    '<div style="background-color:rgba(255,152,0,0.12);border-left:4px solid #ff9800;'
+                    'padding:0.6rem 1rem;border-radius:4px;margin:0.5rem 0;font-weight:700;color:#ff9800;">'
+                    '🧭 DIRECTIONAL PROPERTIES — the quoted strength is along the fibre direction; '
+                    'transverse strength is far lower. Design the layup for the real load path.'
+                    + extra + '</div>',
+                    unsafe_allow_html=True,
+                )
+
+            # --- Property pills (family-aware: Shore D vs HB, flexural vs yield, etc.) ---
+            pills = []
+            if is_na(mat.get("yield_strength_MPa")) and not is_na(mat.get("ultimate_tensile_strength_MPa")):
+                # Ceramics/glass: no yield point — UTS is the flexural strength.
+                pills.append(f"💪 Flexural: {fmt(mat.get('ultimate_tensile_strength_MPa'), ' MPa')}")
+            else:
+                pills.append(f"💪 Yield: {fmt(mat.get('yield_strength_MPa'), ' MPa')}")
+                if not is_na(mat.get("ultimate_tensile_strength_MPa")):
+                    pills.append(f"💯 UTS: {fmt(mat.get('ultimate_tensile_strength_MPa'), ' MPa')}")
+            if not is_na(mat.get("hardness_HB")):
+                pills.append(f"🪨 HB: {fmt(mat.get('hardness_HB'))}")
+            elif not is_na(mat.get("hardness_shore_d")):
+                pills.append(f"🪨 Shore D: {fmt(mat.get('hardness_shore_d'))}")
+            if is_family(mat, "plastic_") and not is_na(mat.get("max_continuous_use_temp_C")):
+                pills.append(f"🌡️ Cont. use: {fmt(mat.get('max_continuous_use_temp_C'), '°C')}")
+            else:
+                pills.append(f"🌡️ Max: {fmt(mat.get('max_service_temp_C'), '°C')}")
+            pills.append(f"⚖️ {fmt(mat.get('density_kg_m3'), ' kg/m³')}")
+            if not is_na(mat.get("approx_cost_usd_per_kg")):
+                pills.append(f"💲 {mat.get('approx_cost_usd_per_kg')} USD/kg")
+            if not is_na(mat.get("machinability_index")):
+                pills.append(f"🔧 Mach: {fmt(mat.get('machinability_index'))}/100")
             pills_html = "".join(f'<span class="prop-pill">{p}</span>' for p in pills)
             st.markdown(pills_html, unsafe_allow_html=True)
-            
+
             st.write("")  # spacer
             
-            # Ratings grid (5 columns)
-            rating_cols = st.columns(5)
-            ratings = [
-                ("Seawater corrosion", mat.get("corrosion_seawater")),
-                ("Acidic corrosion", mat.get("corrosion_acidic")),
-                ("Alkaline corrosion", mat.get("corrosion_alkaline")),
-                ("Weldability", mat.get("weldability")),
-                ("Fatigue", mat.get("fatigue_rating")),
-            ]
-            for col, (label, val) in zip(rating_cols, ratings):
+            # Corrosion / general ratings grid (5 columns)
+            def render_rating_cell(col, label, val):
                 with col:
                     st.markdown(f"**{label}**")
-                    if val is not None:
+                    r = rint(val)
+                    if r is not None:
                         st.markdown(
                             f'<div style="color:{color_for_rating(val)};font-weight:600;">'
-                            f'{rating_emoji(val)}<br>{rating_label(val)} ({val}/5)'
+                            f'{rating_emoji(val)}<br>{rating_label(val)} ({r}/5)'
                             f'</div>',
                             unsafe_allow_html=True
                         )
                     else:
-                        st.caption("—")
-            
+                        st.caption("N/A")
+
+            rating_cols = st.columns(5)
+            ratings = [
+                ("Seawater corr.", mat.get("corrosion_seawater")),
+                ("Acidic corr.", mat.get("corrosion_acidic")),
+                ("Alkaline corr.", mat.get("corrosion_alkaline")),
+                ("Weldability", mat.get("weldability")),
+                ("Fatigue", mat.get("fatigue_rating")),
+            ]
+            for col, (label, val) in zip(rating_cols, ratings):
+                render_rating_cell(col, label, val)
+
+            # Chemical resistance grid (non-metals only — shown when any value exists)
+            chem = [
+                ("Solvents", mat.get("chemical_resistance_solvents")),
+                ("Acids", mat.get("chemical_resistance_acids")),
+                ("Alkalis", mat.get("chemical_resistance_alkalis")),
+                ("Fuels", mat.get("chemical_resistance_fuels")),
+            ]
+            if any(not is_na(v) for _, v in chem):
+                st.markdown("**🧪 Chemical Resistance**")
+                chem_cols = st.columns(4)
+                for col, (label, val) in zip(chem_cols, chem):
+                    render_rating_cell(col, label, val)
+
+            # Joining methods + flammability (UL94) chips
+            chips = []
+            jm = mat.get("joining_method")
+            if not is_na(jm):
+                for method in str(jm).split("|"):
+                    chips.append(f'<span class="prop-pill">🔗 {method.replace("_", " ")}</span>')
+            flam = mat.get("flammability")
+            if not is_na(flam):
+                fc = {"V-0": "#4caf50", "V-1": "#8bc34a", "V-2": "#ffc107", "HB": "#ff9800"}.get(str(flam), "#888")
+                chips.append(
+                    f'<span class="prop-pill" style="background-color:{fc}33;border-color:{fc};color:{fc};">'
+                    f'🔥 UL94 {flam}</span>'
+                )
+            if not is_na(mat.get("uv_resistance")):
+                chips.append(f'<span class="prop-pill">☀️ UV: {rint(mat.get("uv_resistance"))}/5</span>')
+            if chips:
+                st.write("")
+                st.markdown("".join(chips), unsafe_allow_html=True)
+
             # Stress info if applicable
             stress_info = result.get("stress_lookups", {}).get(mat_id)
             if stress_info:
@@ -362,12 +482,18 @@ def render_result(result):
                     unsafe_allow_html=True
                 )
             
-            # Expandable details (applications, welding notes, sources)
+            # Expandable details (applications, joining notes, sources)
             with st.expander("More details"):
-                if mat.get("typical_applications"):
+                if not is_na(mat.get("typical_applications")):
                     st.markdown(f"**Typical applications:** {mat['typical_applications']}")
-                if mat.get("weldability_notes"):
-                    st.markdown(f"**Welding notes:** {mat['weldability_notes']}")
+                if not is_na(mat.get("joining_method")):
+                    st.markdown(f"**Joining methods:** {str(mat['joining_method']).replace('|', ', ').replace('_', ' ')}")
+                if not is_na(mat.get("weldability_notes")):
+                    st.markdown(f"**Joining / welding notes:** {mat['weldability_notes']}")
+                if not is_na(mat.get("water_absorption_percent")):
+                    st.markdown(f"**Water absorption (ASTM D570):** {fmt(mat.get('water_absorption_percent'), ' %', nd=2)}")
+                if not is_na(mat.get("max_continuous_use_temp_C")):
+                    st.markdown(f"**Max continuous use temp:** {fmt(mat.get('max_continuous_use_temp_C'), ' °C')}")
                 st.markdown(f"**Sources:** `{mat.get('sources', '')}`")
             
             st.markdown('</div>', unsafe_allow_html=True)

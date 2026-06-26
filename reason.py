@@ -22,12 +22,27 @@ client = genai.Client(api_key=api_key)
 # REASONING PROMPT (LLM only writes summary + per-material reasoning)
 # -----------------------------------------------------------------
 REASONING_PROMPT_TEMPLATE = """You are a senior mechanical engineer advising a student on material selection.
+The candidate materials may be METALS or NON-METALS (plastics, ceramics, composites).
 
 CRITICAL RULES:
 1. Use ONLY the materials data provided below. No outside knowledge.
 2. Every claim must come from the data. Cite the source.
 3. If data is insufficient, say so.
 4. For each material, write a 1-2 sentence reasoning ONLY (not full properties — the UI will show those).
+5. NEVER invent a value for a field shown as NOT_FOUND. If a property does not apply to the
+   material's class, say it is "not applicable" rather than guessing a number.
+
+INTERPRET PROPERTIES BY MATERIAL FAMILY (see material_class):
+- METALS: reference corrosion ratings, weldability, and machinability as relevant.
+- PLASTICS (material_class starts with "plastic_"): use hardness_shore_d (NOT hardness_HB),
+  max_continuous_use_temp_C (NOT max_service_temp_C), and chemical_resistance_* (NOT corrosion_*).
+  Mention flammability (UL94), uv_resistance, or water_absorption_percent when the query implies them.
+- CERAMICS (material_class starts with "ceramic_"): yield_strength_MPa is NOT_FOUND because ceramics
+  have no yield point — treat ultimate_tensile_strength_MPa as the flexural strength. ALWAYS warn that
+  the material is brittle and must be designed for compression, not tension.
+- COMPOSITES (material_class starts with "composite_"): warn that properties are directional —
+  especially composite_cfrp unidirectional, whose transverse strength is far lower than the quoted
+  longitudinal value. For composite_cfrp, note that galvanic isolation from aluminium is required.
 
 The student asked: "{user_query}"
 
@@ -52,15 +67,27 @@ Output STRICT JSON in this exact format (no markdown fences, no other text):
 
 
 def format_material_for_prompt(m: dict) -> str:
-    """Convert a retrieved material dict to a text block for the LLM."""
+    """Convert a retrieved material dict to a text block for the LLM.
+
+    Includes both metal and non-metal property lines; fields that don't apply to
+    this material show as NOT_FOUND so the LLM knows not to cite them. The prompt
+    rules tell it which fields to use for each material family."""
     return (
         f"--- {m.get('common_name')} (id: {m.get('material_id')}) ---\n"
+        f"  material_class: {m.get('material_class')}\n"
         f"  yield_strength_MPa: {m.get('yield_strength_MPa')}\n"
-        f"  max_service_temp_C: {m.get('max_service_temp_C')}\n"
-        f"  density_kg_m3: {m.get('density_kg_m3')}\n"
-        f"  corrosion_seawater: {m.get('corrosion_seawater')}/5\n"
-        f"  weldability: {m.get('weldability')}/5\n"
+        f"  ultimate_tensile_strength_MPa: {m.get('ultimate_tensile_strength_MPa')}  (flexural strength for ceramics)\n"
+        f"  hardness_HB: {m.get('hardness_HB')}   hardness_shore_d: {m.get('hardness_shore_d')}\n"
+        f"  density_kg_m3: {m.get('density_kg_m3')}   elastic_modulus_GPa: {m.get('elastic_modulus_GPa')}\n"
+        f"  max_service_temp_C: {m.get('max_service_temp_C')}   max_continuous_use_temp_C: {m.get('max_continuous_use_temp_C')}\n"
+        f"  corrosion_seawater: {m.get('corrosion_seawater')}/5  (metals)\n"
+        f"  chemical_resistance solvents/acids/alkalis/fuels: "
+        f"{m.get('chemical_resistance_solvents')}/{m.get('chemical_resistance_acids')}/"
+        f"{m.get('chemical_resistance_alkalis')}/{m.get('chemical_resistance_fuels')}  (non-metals, 1-5)\n"
+        f"  weldability: {m.get('weldability')}/5   joining_method: {m.get('joining_method')}\n"
         f"  machinability_index: {m.get('machinability_index')}\n"
+        f"  flammability(UL94): {m.get('flammability')}   uv_resistance: {m.get('uv_resistance')}/5   "
+        f"water_absorption_percent: {m.get('water_absorption_percent')}\n"
         f"  key_warnings: {m.get('key_warnings', '')}\n"
         f"  sources: {m.get('sources', '')}\n"
     )
@@ -100,14 +127,30 @@ def call_gemini_with_fallback(prompt: str):
     return None, "AI summary unavailable - Gemini is overloaded. Showing database results only."
 
 
+def _as_num(val):
+    """Coerce a metadata value to float, or None if missing / NOT_FOUND.
+    Lets the rule-based fallback compare values without crashing on the
+    'NOT_FOUND' sentinel that non-applicable fields now carry."""
+    try:
+        if val is None:
+            return None
+        s = str(val).strip()
+        if s == "" or s.upper() == "NOT_FOUND":
+            return None
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
 def build_fallback_summary(materials: list, query: str) -> dict:
     """
     Build a basic summary from retrieval data alone, without LLM.
-    Used when Gemini is completely unavailable.
+    Used when Gemini is completely unavailable. Handles metals and non-metals,
+    and is safe against NOT_FOUND values.
     """
     if not materials:
         return {"overall_summary": "", "material_reasoning": {}}
-    
+
     top = materials[0]
     summary = (
         f"Found {len(materials)} candidate materials matching your query. "
@@ -115,21 +158,41 @@ def build_fallback_summary(materials: list, query: str) -> dict:
         f"Database results are shown below - review the property cards "
         f"to compare materials. (AI-written summary unavailable due to service load.)"
     )
-    
+
     reasoning = {}
     for mat in materials:
+        cls = str(mat.get("material_class", ""))
         parts = []
-        if mat.get("corrosion_seawater", 0) >= 4:
+
+        # metal-oriented signals
+        if (_as_num(mat.get("corrosion_seawater")) or 0) >= 4:
             parts.append("good seawater resistance")
-        if mat.get("weldability", 0) >= 4:
+        if (_as_num(mat.get("weldability")) or 0) >= 4:
             parts.append("easily weldable")
-        if mat.get("machinability_index", 0) >= 70:
+        if (_as_num(mat.get("machinability_index")) or 0) >= 70:
             parts.append("highly machinable")
-        if mat.get("yield_strength_MPa", 0) >= 500:
+
+        # non-metal signals
+        if (_as_num(mat.get("chemical_resistance_acids")) or 0) >= 4 \
+                or (_as_num(mat.get("chemical_resistance_solvents")) or 0) >= 4:
+            parts.append("strong chemical resistance")
+        shore = _as_num(mat.get("hardness_shore_d"))
+        if shore is not None and shore >= 75:
+            parts.append("hard, wear-resistant surface")
+
+        # shared strength / cost signals (UTS covers ceramics & composites)
+        if (_as_num(mat.get("yield_strength_MPa")) or 0) >= 500 \
+                or (_as_num(mat.get("ultimate_tensile_strength_MPa")) or 0) >= 800:
             parts.append("high strength")
-        if mat.get("cost_class") == 1:
+        if (_as_num(mat.get("cost_class")) or 99) <= 1:
             parts.append("low cost")
-        
+
+        # family-specific safety notes
+        if cls.startswith("ceramic_"):
+            parts.append("brittle — design for compression")
+        if cls == "composite_cfrp":
+            parts.append("directional properties")
+
         if parts:
             reasoning[mat["material_id"]] = (
                 f"Matched the query with: {', '.join(parts)}. "
@@ -140,7 +203,7 @@ def build_fallback_summary(materials: list, query: str) -> dict:
                 "Retrieved as a candidate by semantic relevance. "
                 "Review properties and warnings below."
             )
-    
+
     return {"overall_summary": summary, "material_reasoning": reasoning}
 
 
@@ -270,6 +333,21 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
 # DEMO (run from terminal)
 # -----------------------------------------------------------------
 if __name__ == "__main__":
-    out = reason_about_query("lightweight material for marine use", top_k=3)
-    print(json.dumps({k: v for k, v in out.items() if k != "materials"}, indent=2))
-    print(f"\nMaterials returned: {len(out['materials'])}")
+    import sys
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+    for q in [
+        "lightweight material for marine use",
+        "low-friction plastic gear that resists fuels",
+        "brittle electrical insulator for 1000 C",
+    ]:
+        print("\n" + "=" * 70)
+        print(f"QUERY: {q}")
+        print("=" * 70)
+        out = reason_about_query(q, top_k=3)
+        print(json.dumps({k: v for k, v in out.items() if k != "materials"}, indent=2))
+        print(f"Materials returned: {len(out['materials'])} -> "
+              f"{[m.get('common_name') for m in out['materials']]}")

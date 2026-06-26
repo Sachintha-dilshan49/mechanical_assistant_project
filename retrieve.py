@@ -18,6 +18,47 @@ collection = chroma_client.get_collection(name=COLLECTION_NAME)
 
 
 # =================================================================
+# Material-family keyword mapping
+# Maps loose words in a query ("plastic", "ceramic", "carbon fibre") to the
+# concrete material_class values in the database. Used as a safety net so that
+# even when the LLM doesn't emit a material_class filter (or is unavailable),
+# a query for "plastic gear" is still constrained to polymer classes.
+# =================================================================
+def infer_family_classes(query_text):
+    """Return a list of material_class values implied by family keywords in the
+    query, or None if the query doesn't name a material family."""
+    t = (query_text or "").lower()
+    classes = []
+
+    def add(*cls):
+        for c in cls:
+            if c not in classes:
+                classes.append(c)
+
+    # --- plastics / polymers ---
+    if any(k in t for k in ("plastic", "polymer", "thermoplastic")):
+        add("plastic_thermoplastic", "plastic_thermoset")
+    if "thermoset" in t:
+        add("plastic_thermoset")
+
+    # --- ceramics ---
+    if "ceramic" in t:
+        add("ceramic_oxide", "ceramic_carbide", "ceramic_glass")
+
+    # --- composites (generic word covers all three families) ---
+    if "composite" in t:
+        add("composite_cfrp", "composite_gfrp", "composite_kevlar")
+    if any(k in t for k in ("carbon fibre", "carbon fiber", "cfrp")):
+        add("composite_cfrp")
+    if any(k in t for k in ("fiberglass", "fibreglass", "gfrp", "glass fibre", "glass fiber")):
+        add("composite_gfrp")
+    if any(k in t for k in ("kevlar", "aramid")):
+        add("composite_kevlar")
+
+    return classes or None
+
+
+# =================================================================
 # FUNCTION 1: Search materials by semantic query + metadata filter
 # =================================================================
 def find_materials(query_text, filters=None, top_k=3):
@@ -26,9 +67,21 @@ def find_materials(query_text, filters=None, top_k=3):
     Filters with multiple conditions are auto-wrapped with $and for ChromaDB.
     """
     print(f"\n[Search] '{query_text}'")
+
+    # Work on a copy so we never mutate the caller's filter dict.
+    filters = dict(filters) if filters else {}
+
+    # If the caller hasn't pinned a material_class but the query names a family
+    # (plastic / ceramic / composite / carbon fibre ...), constrain to it.
+    if "material_class" not in filters:
+        fam = infer_family_classes(query_text)
+        if fam:
+            filters["material_class"] = {"$in": fam}
+            print(f"[Family] query implies material_class in {fam}")
+
     if filters:
         print(f"[Filter] {filters}")
-    
+
     # Normalize filters: ChromaDB requires $and/$or for multi-condition filters
     chroma_filter = None
     if filters:
@@ -52,38 +105,17 @@ def find_materials(query_text, filters=None, top_k=3):
         return materials
     
     for i, mat_id in enumerate(results['ids'][0]):
-        meta = results['metadatas'][0][i]
-        materials.append({
-            "material_id":              mat_id,
-            "common_name":              meta.get('common_name', ''),
-            "material_class":           meta.get('material_class', ''),
-            "condition":                meta.get('condition', ''),
-            "yield_strength_MPa":       meta.get('yield_strength_MPa'),
-            "ultimate_tensile_strength_MPa": meta.get('ultimate_tensile_strength_MPa'),
-            "max_service_temp_C":       meta.get('max_service_temp_C'),
-            "min_service_temp_C":       meta.get('min_service_temp_C'),
-            "corrosion_seawater":       meta.get('corrosion_seawater'),
-            "corrosion_acidic":         meta.get('corrosion_acidic'),
-            "corrosion_alkaline":       meta.get('corrosion_alkaline'),
-            "corrosion_atmospheric":    meta.get('corrosion_atmospheric'),
-            "corrosion_high_temp":      meta.get('corrosion_high_temp'),
-            "weldability":              meta.get('weldability'),
-            "machinability_index":      meta.get('machinability_index'),
-            "cost_class":               meta.get('cost_class'),
-            "availability":             meta.get('availability'),
-            "fatigue_rating":           meta.get('fatigue_rating'),
-            "stress_table_id":          meta.get('stress_table_id', ''),
-            "sources":                  meta.get('sources', ''),
-            "description_text":         results['documents'][0][i],
-            "relevance_score":          1 - results['distances'][0][i],
-            "density_kg_m3":            meta.get('density_kg_m3'),
-            "elastic_modulus_GPa":      meta.get('elastic_modulus_GPa'),
-            "key_warnings":             meta.get('key_warnings', ''),
-            "typical_applications":     meta.get('typical_applications', ''),
-            "weldability_notes":        meta.get('weldability_notes', ''),
-            "approx_cost_usd_per_kg":   meta.get('approx_cost_usd_per_kg', ''),
-        })
-    
+        # Carry every stored metadata field through verbatim (including all the
+        # v3 non-metal fields: hardness_shore_d, chemical_resistance_*,
+        # joining_method, flammability, water_absorption_percent, uv_resistance,
+        # max_continuous_use_temp_C, ...). Numeric fields are floats; fields
+        # that don't apply to this material are the string "NOT_FOUND".
+        mat = dict(results['metadatas'][0][i])
+        mat["material_id"] = mat_id
+        mat["description_text"] = results['documents'][0][i]
+        mat["relevance_score"] = 1 - results['distances'][0][i]
+        materials.append(mat)
+
     return materials
 
 
@@ -160,21 +192,35 @@ def get_allowable_stress(stress_table_id, temp_C):
 # DEMO: Run some example queries
 # =================================================================
 if __name__ == "__main__":
+    # The demo prints unicode (arrows, °C). Force UTF-8 so it doesn't crash on
+    # a legacy cp1252 Windows console. Only affects direct CLI runs, not the app.
+    import sys
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
     print("=" * 60)
     print("Retrieval Layer — Test Queries")
     print("=" * 60)
     
     # --------------------------------------------------
-    # Test 1: Pure semantic search
+    # Test 1: v3 validation queries (metals + non-metals)
     # --------------------------------------------------
-    print("\n--- Test 1: Plain English search ---")
-    results = find_materials("corrosion-resistant material for marine use")
-    for mat in results:
-        print(f"  → {mat['common_name']} (relevance: {mat['relevance_score']:.2f})")
-        print(f"     Sources: {mat['sources']}")
-    
+    validation_queries = [
+        "lightweight plastic for a gear",
+        "corrosion resistant material for chemical storage",
+        "high strength structural material for aerospace",
+        "brittle material for electrical insulation at 1000 C",
+    ]
+    print("\n--- Test 1: v3 semantic search (family inference) ---")
+    for q in validation_queries:
+        results = find_materials(q, top_k=3)
+        names = ", ".join(f"{m['common_name']}" for m in results)
+        print(f"  Q: {q}\n     → {names}")
+
     # --------------------------------------------------
-    # Test 2: Semantic search + metadata filter
+    # Test 2: Semantic search + explicit metadata filter
     # --------------------------------------------------
     print("\n--- Test 2: Search with filter (corrosion_seawater >= 4) ---")
     results = find_materials(
@@ -183,7 +229,7 @@ if __name__ == "__main__":
     )
     for mat in results:
         print(f"  → {mat['common_name']} (corrosion: {mat['corrosion_seawater']}/5)")
-    
+
     # --------------------------------------------------
     # Test 3: Exact allowable stress lookup (in-table)
     # --------------------------------------------------
