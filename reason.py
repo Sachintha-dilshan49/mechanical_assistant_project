@@ -120,14 +120,21 @@ def call_gemini_with_fallback(prompt: str):
                 return response.text, fallback_note
             except Exception as e:
                 error_str = str(e)
-                if "503" in error_str or "429" in error_str or "UNAVAILABLE" in error_str:
+                low = error_str.lower()
+                if "429" in error_str or "resource_exhausted" in low or "quota" in low:
+                    # Quota exhausted / rate-capped: retrying won't help (and the lite
+                    # model shares the same quota), so fail fast instead of stalling.
+                    print(f"  {model_name}: API quota exhausted (429) - failing fast.")
+                    return None, ("AI reasoning unavailable - the Gemini API quota is "
+                                  "exhausted. Showing top database matches only.")
+                if "503" in error_str or "unavailable" in low or "overloaded" in low:
                     wait = 3 * (attempt + 1)
                     print(f"  {model_name} busy (attempt {attempt + 1}/2). Waiting {wait}s...")
                     time.sleep(wait)
                 else:
                     raise
         print(f"  {model_name} unavailable. Trying next model...")
-    
+
     return None, "AI summary unavailable - Gemini is overloaded. Showing database results only."
 
 

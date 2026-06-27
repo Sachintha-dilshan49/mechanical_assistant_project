@@ -317,13 +317,19 @@ def understand_query(user_query: str) -> dict:
             break  # success
         except Exception as e:
             error_str = str(e)
-            if "503" in error_str or "429" in error_str or "UNAVAILABLE" in error_str:
+            low = error_str.lower()
+            if "429" in error_str or "resource_exhausted" in low or "quota" in low:
+                # Quota exhausted: retrying won't help and just stalls the UI.
+                # Fail fast so the pipeline degrades to semantic-only search.
+                print("      Gemini API quota exhausted (429) - failing fast.")
+                return None
+            if "503" in error_str or "unavailable" in low:
                 wait = 5 * (attempt + 1)
                 print(f"      Gemini busy. Retrying in {wait}s...")
                 time.sleep(wait)
             else:
                 raise
-    
+
     if response is None:
         print("ERROR: Gemini unavailable after retries")
         return None
