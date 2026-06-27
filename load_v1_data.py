@@ -115,35 +115,15 @@ print(f"    Inserted {len(stress_df)} rows into SQLite")
 # ============================================================
 print("\n[B] Loading materials into ChromaDB...")
 
-# Read every cell as a string and keep "NOT_FOUND" / blanks literal — no NaN
-# coercion — so mixed columns (e.g. yield = 170 on metals, NOT_FOUND on ceramics)
-# don't blow up int() parsing the way they did under the old metals-only schema.
-materials_df = pd.read_csv(MATERIALS_CSV, dtype=str, keep_default_na=False)
-materials_df = materials_df[materials_df['material_id'].str.strip() != '']
-print(f"    Read {len(materials_df)} materials from CSV")
+# Optional bulk dataset (Kaggle mechanical-properties dump), already cleaned and
+# mapped into our schema by build_kaggle_dataset.py. Loaded into the same pool
+# when present; skipped silently when absent.
+KAGGLE_CSV = "data/kaggle_clean.csv"
 
-client = chromadb.PersistentClient(path=CHROMA_DIR)
 
-try:
-    client.delete_collection(name=COLLECTION_NAME)
-    print(f"    Deleted existing '{COLLECTION_NAME}' collection")
-except Exception:
-    print(f"    No existing collection (first run)")
-
-collection = client.create_collection(
-    name=COLLECTION_NAME,
-    metadata={"description": "Engineering materials for design selection"}
-)
-
-ids = []
-documents = []
-metadatas = []
-
-for _, row in materials_df.iterrows():
-    ids.append(row['material_id'])
-    documents.append(row['description_text'])
-    
-    metadata = {
+def build_metadata(row):
+    """Map one CSV row (all string cells) to a ChromaDB metadata dict."""
+    return {
         # --- identity / classification ---
         "common_name":                   meta_str(row['common_name']),
         "material_class":                meta_str(row['material_class']),
@@ -196,7 +176,49 @@ for _, row in materials_df.iterrows():
         "stress_table_id":               meta_str(row['stress_table_id']),
     }
 
-    metadatas.append(metadata)
+
+def read_rows(path):
+    """Read a materials CSV as all-strings, dropping rows with a blank id."""
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    return df[df['material_id'].str.strip() != '']
+
+
+client = chromadb.PersistentClient(path=CHROMA_DIR)
+
+try:
+    client.delete_collection(name=COLLECTION_NAME)
+    print(f"    Deleted existing '{COLLECTION_NAME}' collection")
+except Exception:
+    print(f"    No existing collection (first run)")
+
+collection = client.create_collection(
+    name=COLLECTION_NAME,
+    metadata={"description": "Engineering materials for design selection"}
+)
+
+# Curated 66 always load; the Kaggle bulk dataset loads too when present.
+sources_to_load = [("curated", MATERIALS_CSV)]
+if Path(KAGGLE_CSV).exists():
+    sources_to_load.append(("kaggle bulk", KAGGLE_CSV))
+
+ids = []
+documents = []
+metadatas = []
+seen_ids = set()
+
+for label, path in sources_to_load:
+    df = read_rows(path)
+    added = 0
+    for _, row in df.iterrows():
+        mid = str(row['material_id']).strip()
+        if mid in seen_ids:          # never add the same id twice
+            continue
+        seen_ids.add(mid)
+        ids.append(mid)
+        documents.append(row['description_text'])
+        metadatas.append(build_metadata(row))
+        added += 1
+    print(f"    Read {added} rows from {path} ({label})")
 
 # Allowlist sanity check — load everything, but flag any unexpected class so a
 # typo in the CSV (e.g. "plastic_thermoplastik") surfaces instead of silently
@@ -207,8 +229,18 @@ if unknown:
     print(f"    WARNING: unexpected material_class values not in allowlist: {sorted(unknown)}")
 print(f"    Material classes loaded ({len(seen_classes)}): {', '.join(sorted(seen_classes))}")
 
-print("    Embedding text and storing... (first run downloads model)")
-collection.add(ids=ids, documents=documents, metadatas=metadatas)
+print(f"    Embedding {len(ids)} documents and storing... (first run downloads model)")
+# Batch the add — the Kaggle merge pushes this to ~2,000 rows, and batching keeps
+# us under ChromaDB's max batch size and shows progress on slow CPU embedding.
+BATCH = 500
+for start in range(0, len(ids), BATCH):
+    end = start + BATCH
+    collection.add(
+        ids=ids[start:end],
+        documents=documents[start:end],
+        metadatas=metadatas[start:end],
+    )
+    print(f"      stored {min(end, len(ids))}/{len(ids)}")
 print(f"    Stored {collection.count()} vectors in ChromaDB")
 
 # ============================================================
