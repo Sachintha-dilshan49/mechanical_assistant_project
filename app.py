@@ -169,8 +169,10 @@ def rank_badge(rank):
 # =================================================================
 if "history" not in st.session_state:
     st.session_state.history = []
-if "last_result" not in st.session_state:
-    st.session_state.last_result = None
+if "active" not in st.session_state:
+    # Index of the search currently shown in the main area.
+    # None = blank "new search" state (nothing selected yet).
+    st.session_state.active = None
 
 
 # =================================================================
@@ -187,50 +189,45 @@ st.caption(
 # SIDEBAR
 # =================================================================
 with st.sidebar:
-    st.caption(
-        "Every property value comes from a verified source. "
-        "The model only reasons — it cannot invent numbers."
-    )
-
-    top_k = st.slider("Recommendations to show", 2, 5, 3)
-
-    st.markdown("---")
-    st.markdown("**Try a query**")
-    examples = [
-        "Lightweight material for marine use",
-        "Shaft at 300 MPa stress and 200°C",
-        "Low-friction plastic gear that resists fuels",
-        "Brittle electrical insulator for 1000°C",
-        "Stiff carbon-fibre material for an aerospace panel",
-        "Titanium for medical implants",
-    ]
-    for ex in examples:
-        if st.button(ex, use_container_width=True, key=f"ex_{ex}"):
-            # Fill the search box and run on the next rerun.
-            st.session_state.query_input = ex
-            st.session_state.run_now = True
+    # New search — clears the box and shows the blank state (like "New chat").
+    if st.button("✛  New search", use_container_width=True):
+        st.session_state.active = None
+        st.session_state.query_input = ""
+        st.rerun()
 
     st.markdown("---")
-    with st.expander("What's in the database"):
-        st.caption(
-            "66 materials • 24 classes\n\n"
-            "**Metals:** Stainless • Carbon • Alloy • Tool steels • "
-            "Aluminum • Magnesium • Copper • Nickel • Cast iron • Titanium\n\n"
-            "**Non-metals:** Thermoplastics • Thermosets • "
-            "Ceramics (oxide/carbide/glass) • Composites (CFRP/GFRP/Kevlar)"
-        )
 
-    st.caption(f"Queries this session: **{len(st.session_state.history)}**")
-    if st.button("Clear history", use_container_width=True):
+    history = st.session_state.history
+    if history:
+        # Conversation list, most recent first; the active one is highlighted.
+        for i in range(len(history) - 1, -1, -1):
+            q = history[i]["query"]
+            label = (q[:32] + "…") if len(q) > 32 else q
+            is_active = (st.session_state.active == i)
+            if st.button(
+                label,
+                key=f"hist_{i}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state.active = i
+                st.rerun()
+    else:
+        st.caption("Your searches will appear here.")
+
+    # Settings + clear pinned at the bottom.
+    st.markdown("---")
+    top_k = st.slider("Results per search", 2, 5, 3)
+    if history and st.button("Clear history", use_container_width=True):
         st.session_state.history = []
-        st.session_state.last_result = None
+        st.session_state.active = None
         st.rerun()
 
 
 # =================================================================
 # INPUT  (a form so pressing Enter submits — no mouse needed)
 # =================================================================
-with st.form("query_form", clear_on_submit=False):
+with st.form("query_form", clear_on_submit=True):
     user_query = st.text_input(
         "Your query",
         key="query_input",
@@ -243,24 +240,20 @@ with st.form("query_form", clear_on_submit=False):
 # =================================================================
 # RUN PIPELINE
 # =================================================================
-# Run on Enter / button, or when a sidebar example was clicked.
-run = submit or st.session_state.pop("run_now", False)
+current_error = None  # an error from this run is shown but not saved to history
 
-if run:
+if submit:
     if not user_query.strip():
         st.warning("Please enter a query first.")
     else:
         with st.spinner("Searching database and generating recommendations…"):
             result = reason_about_query(user_query, top_k=top_k)
 
-        st.session_state.last_result = result
-
-        # Save to history (only successful retrievals)
-        if not result.get("error"):
-            st.session_state.history.append({
-                "query": user_query,
-                "result": result,
-            })
+        if result.get("error"):
+            current_error = result
+        else:
+            st.session_state.history.append({"query": user_query, "result": result})
+            st.session_state.active = len(st.session_state.history) - 1  # show newest
 
 
 # =================================================================
@@ -497,20 +490,18 @@ def render_result(result):
             st.write("")  # spacer between cards
 
 
-# --- Show current result ---
-if st.session_state.last_result:
-    render_result(st.session_state.last_result)
-
-
-# --- Show history (excluding most recent, already shown above) ---
-if st.session_state.history and len(st.session_state.history) > 1:
-    st.markdown("---")
-    st.markdown('<div class="sec">Previous queries</div>', unsafe_allow_html=True)
-    for i, entry in enumerate(reversed(st.session_state.history[:-1])):
-        query_num = len(st.session_state.history) - i - 1
-        title = entry['query'][:80] + ('...' if len(entry['query']) > 80 else '')
-        with st.expander(f"Q{query_num}: {title}"):
-            render_result(entry['result'])
+# --- Show the active search (newest after a run, or a clicked history item) ---
+if current_error is not None:
+    render_result(current_error)
+elif st.session_state.active is not None and st.session_state.history:
+    idx = st.session_state.active
+    if idx >= len(st.session_state.history):
+        idx = len(st.session_state.history) - 1
+    entry = st.session_state.history[idx]
+    st.markdown(f'<div class="sec">{entry["query"]}</div>', unsafe_allow_html=True)
+    render_result(entry["result"])
+else:
+    st.info("Describe your design conditions above and press Enter to search.")
 
 
 # --- Footer ---
