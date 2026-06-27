@@ -67,7 +67,30 @@ IMPORTANT FILTER RULES:
   so a chemical_resistance filter naturally restricts results to non-metals — that is intended.
 - If the query clearly implies a material family, add a material_class $in [...] filter listing the
   classes in that family, and set "material_family" accordingly.
-- Only add a filter the query actually implies. Do not over-constrain.
+- Add the filters the query implies — but derive them by REASONING, not just keywords.
+
+THINK LIKE AN ENGINEER (very important):
+Users often describe an APPLICATION in everyday language ("toy boat", "garden gate hinge",
+"phone case", "kitchen knife", "drone frame") instead of engineering specs. Do not match
+keywords blindly — reason about what the object physically has to do, then translate that
+into filters and constraints. Ask yourself:
+- Environment? (in/on water = marine; outdoors/sun = UV + weather; chemicals; heat; food/drink)
+- Function & loads? (must float, must be hard, must flex, must carry stress, must not shatter)
+- Practical priorities? (cheap, light, easy to shape or join)
+Use first-principles common sense even when the user gives NO numbers. Reasoning you should
+do automatically:
+- floats on / sits in water (boat, hull, kayak, bath toy) -> must resist water AND be light;
+  prefer plastics or marine aluminum; NEVER dense rusting metals like cast iron or carbon steel.
+- toy / disposable / cheap household item -> low cost_class, usually a plastic.
+- outdoors / sun-exposed -> uv_exposure true; if metal, needs good corrosion_atmospheric.
+- drinking water / food contact -> good corrosion/chemical resistance; avoid leaded alloys.
+- knife / blade / cutting edge -> high hardness and strength (tool steel or high-carbon steel).
+- light AND strong (drone, aircraft, bike, sports gear) -> composites, aluminum, or titanium.
+
+A real application should almost NEVER produce an empty "filters" object. If you cannot
+justify a hard numeric filter, still set "material_family" and add at least one soft filter
+(cost_class, density_kg_m3, a corrosion_* or chemical_resistance_* rating, etc.) that captures
+the dominant requirement. Empty filters means you did not reason enough about the application.
 
 OUTPUT FORMAT (must be valid JSON, no other text):
 {
@@ -193,6 +216,49 @@ Output:
         "material_family": "composites"
     },
     "reasoning": "Aerospace panel with adhesive bonding and a strength/stiffness priority points to fibre-reinforced composites."
+}
+
+Query: "I want to make a toy boat, what material should I use?"
+Output:
+{
+    "semantic_query": "lightweight low-cost waterproof plastic for a small toy boat hull",
+    "filters": {
+        "material_class": {"$in": ["plastic_thermoplastic", "plastic_thermoset"]},
+        "cost_class": {"$lte": 2}
+    },
+    "extracted_constraints": {
+        "temperature_C": null,
+        "environment": "marine",
+        "priority": "lightweight",
+        "stress_required_MPa": null,
+        "chemical_environment": null,
+        "joining_required": null,
+        "uv_exposure": false,
+        "flammability_required": null,
+        "material_family": "plastics"
+    },
+    "reasoning": "A toy boat must float and resist water cheaply, so a light, low-cost, waterproof plastic is ideal; dense rusting metals like cast iron are the wrong choice."
+}
+
+Query: "a hinge for my garden gate that won't rust outside"
+Output:
+{
+    "semantic_query": "weather-resistant non-rusting metal for an outdoor gate hinge",
+    "filters": {
+        "corrosion_atmospheric": {"$gte": 4}
+    },
+    "extracted_constraints": {
+        "temperature_C": null,
+        "environment": "atmospheric",
+        "priority": "corrosion",
+        "stress_required_MPa": null,
+        "chemical_environment": null,
+        "joining_required": null,
+        "uv_exposure": true,
+        "flammability_required": null,
+        "material_family": "metals"
+    },
+    "reasoning": "A hinge needs metal strength but must not rust outdoors, so restrict to metals with good atmospheric corrosion resistance such as stainless or aluminum."
 }
 
 Now process the user's query below. Output ONLY the JSON, no other text, no markdown fences.
