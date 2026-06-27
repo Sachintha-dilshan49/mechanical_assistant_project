@@ -89,8 +89,17 @@ do automatically:
 
 A real application should almost NEVER produce an empty "filters" object. If you cannot
 justify a hard numeric filter, still set "material_family" and add at least one soft filter
-(cost_class, density_kg_m3, a corrosion_* or chemical_resistance_* rating, etc.) that captures
-the dominant requirement. Empty filters means you did not reason enough about the application.
+(a material_class steer, cost_class, a corrosion_* or chemical_resistance_* rating, etc.) that
+captures the dominant requirement. Empty filters means you did not reason enough.
+
+BUT DO NOT OVER-FILTER either. "Light", "strong", "stiff", "durable", "tough" are PRIORITIES,
+not hard limits — do NOT turn them into a hard density_kg_m3 or yield_strength_MPa / UTS cutoff.
+A numeric cutoff silently deletes entire material families: e.g. density_kg_m3 <= 3000 removes
+ALL steel, yet steel is the single most common car-body material. Only add a numeric property
+filter when the user gives a real number or a hard physical requirement ("must float", "300 MPa",
+"under 2 kg"). For loose adjectives, put the intent in extracted_constraints.priority and let the
+reasoning step weigh it; to steer the material type, prefer a material_class / material_family
+filter over an arbitrary numeric cutoff.
 
 OUTPUT FORMAT (must be valid JSON, no other text):
 {
@@ -259,6 +268,27 @@ Output:
         "material_family": "metals"
     },
     "reasoning": "A hinge needs metal strength but must not rust outdoors, so restrict to metals with good atmospheric corrosion resistance such as stainless or aluminum."
+}
+
+Query: "what is the perfect material for a car body?"
+Output:
+{
+    "semantic_query": "formable low-cost sheet metal for automotive body panels",
+    "filters": {
+        "material_class": {"$in": ["carbon_steel_low", "carbon_steel_medium", "aluminum_wrought"]}
+    },
+    "extracted_constraints": {
+        "temperature_C": null,
+        "environment": "atmospheric",
+        "priority": "lightweight",
+        "stress_required_MPa": null,
+        "chemical_environment": null,
+        "joining_required": "welding",
+        "uv_exposure": false,
+        "flammability_required": null,
+        "material_family": "metals"
+    },
+    "reasoning": "Car bodies are overwhelmingly formable low-carbon sheet steel or aluminum (good formability, weldability, crash energy absorption, low cost); composites appear only on specialty cars. Lightweight is a priority here, NOT a hard density cutoff that would wrongly exclude steel."
 }
 
 Now process the user's query below. Output ONLY the JSON, no other text, no markdown fences.

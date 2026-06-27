@@ -167,93 +167,54 @@ def rank_badge(rank):
 # =================================================================
 # SESSION STATE
 # =================================================================
-if "history" not in st.session_state:
-    st.session_state.history = []
-if "active" not in st.session_state:
-    # Index of the search currently shown in the main area.
-    # None = blank "new search" state (nothing selected yet).
-    st.session_state.active = None
-
-
-# =================================================================
-# HEADER
-# =================================================================
-st.title("Material Selection Assistant")
-st.caption(
-    "Describe your design conditions — get ranked materials with verified "
-    "properties and citations. Press Enter to search."
-)
+if "conversations" not in st.session_state:
+    # ChatGPT-style: a list of chats, each a sequence of message turns.
+    # A message is {"role": "user", "content": str} or
+    #              {"role": "assistant", "result": <reason_about_query dict>}.
+    st.session_state.conversations = [{"title": "New chat", "messages": []}]
+if "current" not in st.session_state:
+    st.session_state.current = 0
 
 
 # =================================================================
 # SIDEBAR
 # =================================================================
 with st.sidebar:
-    # New search — clears the box and shows the blank state (like "New chat").
-    if st.button("✛  New search", use_container_width=True):
-        st.session_state.active = None
-        st.session_state.query_input = ""
+    st.markdown("### 🔧 Material Assistant")
+
+    if st.button("✛  New chat", use_container_width=True):
+        convs = st.session_state.conversations
+        # Reuse the current chat if it's already empty, instead of stacking blanks.
+        if convs[st.session_state.current]["messages"]:
+            convs.append({"title": "New chat", "messages": []})
+            st.session_state.current = len(convs) - 1
         st.rerun()
 
     st.markdown("---")
+    st.caption("Chats")
 
-    history = st.session_state.history
-    if history:
-        # Conversation list, most recent first; the active one is highlighted.
-        for i in range(len(history) - 1, -1, -1):
-            q = history[i]["query"]
-            label = (q[:32] + "…") if len(q) > 32 else q
-            is_active = (st.session_state.active == i)
-            if st.button(
-                label,
-                key=f"hist_{i}",
-                use_container_width=True,
-                type="primary" if is_active else "secondary",
-            ):
-                st.session_state.active = i
-                st.rerun()
-    else:
-        st.caption("Your searches will appear here.")
+    convs = st.session_state.conversations
+    for i in range(len(convs) - 1, -1, -1):
+        title = convs[i]["title"] or "New chat"
+        label = (title[:30] + "…") if len(title) > 30 else title
+        is_cur = (i == st.session_state.current)
+        if st.button(
+            label,
+            key=f"conv_{i}",
+            use_container_width=True,
+            type="primary" if is_cur else "secondary",
+        ):
+            st.session_state.current = i
+            st.rerun()
 
-    # Settings + clear pinned at the bottom.
+    # Settings + reset pinned at the bottom.
     st.markdown("---")
-    top_k = st.slider("Results per search", 2, 5, 3)
-    if history and st.button("Clear history", use_container_width=True):
-        st.session_state.history = []
-        st.session_state.active = None
+    top_k = st.slider("Results per answer", 2, 5, 3)
+    if st.button("Clear all chats", use_container_width=True):
+        st.session_state.conversations = [{"title": "New chat", "messages": []}]
+        st.session_state.current = 0
         st.rerun()
-
-
-# =================================================================
-# INPUT  (a form so pressing Enter submits — no mouse needed)
-# =================================================================
-with st.form("query_form", clear_on_submit=True):
-    user_query = st.text_input(
-        "Your query",
-        key="query_input",
-        placeholder="e.g., material for a propeller shaft in seawater handling 250 MPa",
-        label_visibility="collapsed",
-    )
-    submit = st.form_submit_button("Find materials", type="primary")
-
-
-# =================================================================
-# RUN PIPELINE
-# =================================================================
-current_error = None  # an error from this run is shown but not saved to history
-
-if submit:
-    if not user_query.strip():
-        st.warning("Please enter a query first.")
-    else:
-        with st.spinner("Searching database and generating recommendations…"):
-            result = reason_about_query(user_query, top_k=top_k)
-
-        if result.get("error"):
-            current_error = result
-        else:
-            st.session_state.history.append({"query": user_query, "result": result})
-            st.session_state.active = len(st.session_state.history) - 1  # show newest
+    st.caption("AI-assisted recommendations — verify critical designs with an engineer.")
 
 
 # =================================================================
@@ -490,23 +451,42 @@ def render_result(result):
             st.write("")  # spacer between cards
 
 
-# --- Show the active search (newest after a run, or a clicked history item) ---
-if current_error is not None:
-    render_result(current_error)
-elif st.session_state.active is not None and st.session_state.history:
-    idx = st.session_state.active
-    if idx >= len(st.session_state.history):
-        idx = len(st.session_state.history) - 1
-    entry = st.session_state.history[idx]
-    st.markdown(f'<div class="sec">{entry["query"]}</div>', unsafe_allow_html=True)
-    render_result(entry["result"])
+# =================================================================
+# CHAT  (ChatGPT-style: message bubbles + input pinned at the bottom)
+# =================================================================
+conv = st.session_state.conversations[st.session_state.current]
+
+# Chat box is always pinned to the bottom regardless of where it's called.
+prompt = st.chat_input("Describe your design conditions…")
+if prompt and prompt.strip():
+    conv["messages"].append({"role": "user", "content": prompt.strip()})
+    if not conv["title"] or conv["title"] == "New chat":
+        conv["title"] = prompt.strip()
+
+if not conv["messages"]:
+    # Centered empty-state greeting, like a fresh ChatGPT thread.
+    st.markdown(
+        "<div style='text-align:center;margin-top:16vh;'>"
+        "<div style='font-size:1.7rem;font-weight:600;color:#c7ccd3;'>🔧 Material Selection Assistant</div>"
+        "<div class='muted' style='margin-top:0.6rem;font-size:0.95rem;'>"
+        "Describe your design conditions and I'll recommend materials with verified data."
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
 else:
-    st.info("Describe your design conditions above and press Enter to search.")
+    # Replay the conversation as chat bubbles.
+    for msg in conv["messages"]:
+        with st.chat_message(msg["role"]):
+            if msg["role"] == "user":
+                st.markdown(msg["content"])
+            else:
+                render_result(msg["result"])
 
-
-# --- Footer ---
-st.markdown("---")
-st.caption(
-    "Recommendations based on a curated database of engineering references. "
-    "For critical applications, validate with a qualified engineer."
-)
+    # If the last turn is an unanswered user message, generate the answer now —
+    # the user bubble is already on screen, so this feels like a live reply.
+    if conv["messages"][-1]["role"] == "user":
+        with st.chat_message("assistant"):
+            with st.spinner("Searching database and reasoning…"):
+                result = reason_about_query(conv["messages"][-1]["content"], top_k=top_k)
+            render_result(result)
+        conv["messages"].append({"role": "assistant", "result": result})
