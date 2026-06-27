@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from google import genai
 
 from understand_query import understand_query
-from retrieve import find_materials, get_allowable_stress
+from retrieve import find_candidates, get_allowable_stress
 
 # -----------------------------------------------------------------
 # SETUP
@@ -21,57 +21,52 @@ client = genai.Client(api_key=api_key)
 # -----------------------------------------------------------------
 # REASONING PROMPT (LLM only writes summary + per-material reasoning)
 # -----------------------------------------------------------------
-REASONING_PROMPT_TEMPLATE = """You are a senior mechanical engineer advising a student on material selection.
-The candidate materials may be METALS or NON-METALS (plastics, ceramics, composites).
-
-CRITICAL RULES:
-1. All specific property VALUES and numbers must come only from the data below. Never invent or
-   guess a number, and never cite a source you were not given. The database is the source of truth.
-2. You MAY and SHOULD apply general engineering judgment and physical common sense — e.g. low
-   density floats, brittle materials shatter under impact, ferrous metals rust in water, high
-   hardness resists wear, thin sections need toughness — to judge how well each material actually
-   fits the user's application. Reasoning from principles is encouraged; fabricating data is not.
-3. Be honest about fit. Do NOT endorse a material just because it ranked first in retrieval. If a
-   retrieved option is a poor choice for the stated use, say so plainly and say why. If none of
-   the options are ideal, recommend the closest one and describe what property profile would suit
-   the job better (without inventing a specific product or number).
-4. If the data is insufficient for a claim, say so.
-5. For each material, write a 1-2 sentence reasoning ONLY (not full properties — the UI shows those).
-6. NEVER invent a value for a field shown as NOT_FOUND. If a property does not apply to the
-   material's class, say it is "not applicable" rather than guessing a number.
-
-INTERPRET PROPERTIES BY MATERIAL FAMILY (see material_class):
-- METALS: reference corrosion ratings, weldability, and machinability as relevant.
-- PLASTICS (material_class starts with "plastic_"): use hardness_shore_d (NOT hardness_HB),
-  max_continuous_use_temp_C (NOT max_service_temp_C), and chemical_resistance_* (NOT corrosion_*).
-  Mention flammability (UL94), uv_resistance, or water_absorption_percent when the query implies them.
-- CERAMICS (material_class starts with "ceramic_"): yield_strength_MPa is NOT_FOUND because ceramics
-  have no yield point — treat ultimate_tensile_strength_MPa as the flexural strength. ALWAYS warn that
-  the material is brittle and must be designed for compression, not tension.
-- COMPOSITES (material_class starts with "composite_"): warn that properties are directional —
-  especially composite_cfrp unidirectional, whose transverse strength is far lower than the quoted
-  longitudinal value. For composite_cfrp, note that galvanic isolation from aluminium is required.
+REASONING_PROMPT_TEMPLATE = """You are a senior mechanical engineer helping a student choose a material.
+You are given a POOL of candidate materials retrieved from a database. Your job is to SELECT and
+RANK the ones that genuinely fit the application — NOT to repeat the retrieval order. The pool was
+gathered broadly and WILL contain unsuitable options; filtering them out by reasoning is your job.
 
 The student asked: "{user_query}"
+Interpreted as: {semantic_query}
 
-Our retrieval system understood this as:
-- Semantic query: {semantic_query}
-- Filters applied: {filters}
+CRITICAL RULES:
+1. All specific property VALUES and numbers come ONLY from the data below — never invent a number
+   and never cite a source you were not given. The database is the source of truth for facts.
+2. Apply real engineering judgment and physical common sense to pick the best materials for THIS
+   job — e.g. low density floats while dense ferrous metals sink and rust in water; brittle
+   materials shatter under impact; high hardness resists wear; car bodies are normally formable
+   sheet steel or aluminum; cheap toys are usually plastic. Reasoning from principles is required;
+   fabricating data is not.
+3. SELECT the best {max_select} or fewer materials, ranked best-first, and ignore poor fits. If NONE
+   of the pool is well suited, still pick the closest 1-2, say clearly they are compromises, and
+   describe what property profile would actually suit the job.
+4. NEVER invent a value for a field shown as NOT_FOUND; if a property does not apply to the
+   material's class, treat it as "not applicable".
 
-Materials retrieved (already ranked):
+INTERPRET PROPERTIES BY FAMILY (material_class):
+- METALS: corrosion ratings, weldability, machinability.
+- PLASTICS (plastic_*): hardness_shore_d (NOT hardness_HB), max_continuous_use_temp_C (NOT
+  max_service_temp_C), chemical_resistance_* (NOT corrosion_*); mention flammability/uv_resistance/
+  water_absorption when relevant.
+- CERAMICS (ceramic_*): no yield point (NOT_FOUND) — UTS is the flexural strength; ALWAYS warn it is
+  brittle and must be designed for compression.
+- COMPOSITES (composite_*): properties are directional (especially composite_cfrp); for cfrp note
+  that galvanic isolation from aluminium is required.
+
+CANDIDATE POOL:
 {materials_block}
 
 {stress_block}
 
-Output STRICT JSON in this exact format (no markdown fences, no other text):
+Output STRICT JSON only (no markdown fences, no other text):
 {{
-    "overall_summary": "<2-3 sentence comparison and recommendation>",
-    "material_reasoning": {{
-        "<material_id_1>": "<1-2 sentences explaining why this material fits the query>",
-        "<material_id_2>": "<1-2 sentences>"
-    }}
+    "overall_summary": "<2-3 sentences: the recommendation and the key tradeoff>",
+    "selected": [
+        {{"material_id": "<id from the pool above>", "reasoning": "<1-2 sentences why it fits this job>"}}
+    ]
 }}
-"""
+The "selected" list must be ranked best-first and contain ONLY material_id values that appear in the
+pool above. Order matters — the first entry is your #1 recommendation."""
 
 
 def format_material_for_prompt(m: dict) -> str:
@@ -93,7 +88,8 @@ def format_material_for_prompt(m: dict) -> str:
         f"{m.get('chemical_resistance_solvents')}/{m.get('chemical_resistance_acids')}/"
         f"{m.get('chemical_resistance_alkalis')}/{m.get('chemical_resistance_fuels')}  (non-metals, 1-5)\n"
         f"  weldability: {m.get('weldability')}/5   joining_method: {m.get('joining_method')}\n"
-        f"  machinability_index: {m.get('machinability_index')}\n"
+        f"  machinability_index: {m.get('machinability_index')}   "
+        f"cost_class: {m.get('cost_class')}/5   approx_cost_usd_per_kg: {m.get('approx_cost_usd_per_kg')}\n"
         f"  flammability(UL94): {m.get('flammability')}   uv_resistance: {m.get('uv_resistance')}/5   "
         f"water_absorption_percent: {m.get('water_absorption_percent')}\n"
         f"  key_warnings: {m.get('key_warnings', '')}\n"
@@ -256,24 +252,80 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
     filters = understood.get("filters", {})
     constraints = understood.get("extracted_constraints", {})
     
-    # Step 2: Retrieve materials
-    materials = find_materials(
+    family = constraints.get("material_family")
+
+    # Step 2: Retrieve a BROAD candidate pool. Filters only gather candidates here;
+    # the reasoning LLM makes the actual choice, so a too-tight filter can no longer
+    # silently delete the right answer before the model ever sees it.
+    POOL_SIZE = 15
+    pool = find_candidates(
         query_text=semantic_query,
         filters=filters if filters else None,
-        top_k=top_k
+        family=family,
+        pool_size=POOL_SIZE,
     )
-    if not materials:
-        # Retry without filters if too restrictive
-        materials = find_materials(query_text=semantic_query, top_k=top_k)
-    if not materials:
+    if not pool:
         result["error"] = "No materials in the database match this query."
         return result
-    result["materials"] = materials
-    
-    # Step 3: Stress lookups (database only, never fails on LLM)
+    pool_by_id = {m["material_id"]: m for m in pool}
+
+    # Step 3: Ask the LLM to SELECT and RANK the best materials from the pool.
+    materials_block = "\n\n".join(format_material_for_prompt(m) for m in pool)
+    final_prompt = REASONING_PROMPT_TEMPLATE.format(
+        user_query=user_query,
+        semantic_query=semantic_query,
+        max_select=top_k,
+        materials_block=materials_block,
+        stress_block="",
+    )
+
+    try:
+        text, fallback_note = call_gemini_with_fallback(final_prompt)
+    except Exception as e:
+        # Non-transient Gemini error — never crash the pipeline; fall back below.
+        print(f"  Gemini reasoning failed: {e}")
+        text, fallback_note = None, "AI selection unavailable - reasoning service errored. Showing top database matches."
+
+    selected = []
+    reasoning = {}
+    summary = ""
+
+    if text:
+        try:
+            text = text.strip()
+            if text.startswith("```"):
+                text = "\n".join(l for l in text.split("\n") if not l.startswith("```"))
+            parsed = json.loads(text)
+            summary = parsed.get("overall_summary", "")
+            for item in parsed.get("selected", []):
+                mid = item.get("material_id")
+                if mid in pool_by_id and mid not in reasoning:   # ignore hallucinated/dupe ids
+                    selected.append(pool_by_id[mid])
+                    reasoning[mid] = item.get("reasoning", "")
+                if len(selected) >= top_k:
+                    break
+            if fallback_note:
+                result["warning"] = fallback_note
+        except json.JSONDecodeError:
+            result["warning"] = "AI returned malformed output - showing top database matches."
+
+    if not selected:
+        # Fallback: take the best pool matches with rule-based reasoning.
+        selected = pool[:top_k]
+        fb = build_fallback_summary(selected, user_query)
+        summary = summary or fb["overall_summary"]
+        reasoning = fb["material_reasoning"]
+        if not result["warning"]:
+            result["warning"] = fallback_note or "AI summary unavailable. Showing top database matches."
+
+    result["materials"] = selected
+    result["summary"] = summary
+    result["reasoning"] = reasoning
+
+    # Step 4: Allowable-stress lookups for the SELECTED materials (database only).
     temp_C = constraints.get("temperature_C")
     if temp_C is not None:
-        for mat in materials:
+        for mat in selected:
             stress_table_id = mat.get("stress_table_id", "")
             if stress_table_id:
                 stress_info = get_allowable_stress(stress_table_id, float(temp_C))
@@ -284,56 +336,7 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
                         "interpolated": stress_info.get("interpolated", False),
                         "temperature_C": temp_C,
                     }
-    
-    # Step 4: Try LLM reasoning, fall back if Gemini fails
-    materials_block = "\n\n".join(format_material_for_prompt(m) for m in materials)
-    stress_block = ""
-    if result["stress_lookups"]:
-        stress_lines = [f"Stress at {temp_C}C:"]
-        for mat_id, info in result["stress_lookups"].items():
-            stress_lines.append(f"  - {mat_id}: {info['stress_MPa']} MPa")
-        stress_block = "\n".join(stress_lines)
-    
-    final_prompt = REASONING_PROMPT_TEMPLATE.format(
-        user_query=user_query,
-        semantic_query=semantic_query,
-        filters=json.dumps(filters),
-        materials_block=materials_block,
-        stress_block=stress_block,
-    )
-    
-    try:
-        text, fallback_note = call_gemini_with_fallback(final_prompt)
-    except Exception as e:
-        # Non-transient Gemini error (bad request, auth, network, etc.).
-        # Never crash the pipeline — fall back to the rule-based summary.
-        print(f"  Gemini reasoning failed: {e}")
-        text, fallback_note = None, "AI summary unavailable - reasoning service errored. Showing database results only."
 
-    if text:
-        try:
-            text = text.strip()
-            if text.startswith("```"):
-                lines = text.split("\n")
-                text = "\n".join(line for line in lines if not line.startswith("```"))
-            parsed = json.loads(text)
-            result["summary"] = parsed.get("overall_summary", "")
-            result["reasoning"] = parsed.get("material_reasoning", {})
-            if fallback_note:
-                result["warning"] = fallback_note
-        except json.JSONDecodeError:
-            # Malformed JSON from LLM - fall back to rule-based
-            fallback = build_fallback_summary(materials, user_query)
-            result["summary"] = fallback["overall_summary"]
-            result["reasoning"] = fallback["material_reasoning"]
-            result["warning"] = "AI returned malformed output - showing rule-based summary."
-    else:
-        # All Gemini attempts failed - use rule-based summary
-        fallback = build_fallback_summary(materials, user_query)
-        result["summary"] = fallback["overall_summary"]
-        result["reasoning"] = fallback["material_reasoning"]
-        result["warning"] = fallback_note or "AI summary unavailable. Showing database results only."
-    
     return result
 
 

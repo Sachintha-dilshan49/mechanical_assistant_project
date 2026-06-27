@@ -120,6 +120,80 @@ def find_materials(query_text, filters=None, top_k=3):
 
 
 # =================================================================
+# Material family -> concrete classes, for coarse family-level retrieval.
+# =================================================================
+FAMILY_TO_CLASSES = {
+    "metals": [
+        "stainless_austenitic", "stainless_martensitic", "stainless_ferritic",
+        "stainless_ph", "carbon_steel_low", "carbon_steel_medium",
+        "carbon_steel_high", "alloy_steel", "tool_steel", "cast_iron",
+        "aluminum_wrought", "aluminum_cast", "magnesium_alloy", "copper_alloy",
+        "nickel_alloy", "titanium_alloy",
+    ],
+    "plastics": ["plastic_thermoplastic", "plastic_thermoset"],
+    "ceramics": ["ceramic_oxide", "ceramic_carbide", "ceramic_glass"],
+    "composites": ["composite_cfrp", "composite_gfrp", "composite_kevlar"],
+}
+
+
+def _candidate_classes(filters, family):
+    """The reliable coarse steer: the material_class list to diversify over.
+    From an explicit material_class filter, else the family's classes, else None."""
+    mc = (filters or {}).get("material_class")
+    if isinstance(mc, dict):
+        if mc.get("$in"):
+            return list(mc["$in"])
+        if mc.get("$eq"):
+            return [mc["$eq"]]
+    elif isinstance(mc, str):
+        return [mc]
+    if family and family in FAMILY_TO_CLASSES:
+        return list(FAMILY_TO_CLASSES[family])
+    return None
+
+
+def find_candidates(query_text, filters=None, family=None, pool_size=18):
+    """Gather a BROAD, CLASS-DIVERSE candidate pool for the reasoning step to choose
+    from. Filters only GATHER candidates here — they never make the final decision.
+
+    The key move is diversity: a plain semantic search (even restricted to metals)
+    is dominated by whichever subtype has the most rows and best keyword match — e.g.
+    hundreds of aluminum alloys crowd out steel for a 'car body' query, so steel would
+    never reach the model. So we pull the top few from EACH class in the steer and
+    keep them guaranteed, then fill the rest by semantic relevance. Fragile numeric
+    cutoffs are never applied, so they can't delete the right answer. The reasoning
+    LLM then selects and ranks from this pool.
+    """
+    filters = dict(filters or {})
+    classes = _candidate_classes(filters, family)
+
+    seen, guaranteed = set(), []
+    if classes:
+        per_class = 2 if len(classes) <= 8 else 1
+        for c in classes:
+            for m in find_materials(query_text, filters={"material_class": {"$eq": c}}, top_k=per_class):
+                if m["material_id"] not in seen:
+                    seen.add(m["material_id"])
+                    guaranteed.append(m)
+
+    # Fill remaining slots by semantic relevance — kept within the family when one
+    # is known, global otherwise. Never drops a guaranteed diversity pick.
+    filler_filter = {"material_class": {"$in": classes}} if classes else None
+    fillers = find_materials(query_text, filters=filler_filter, top_k=pool_size)
+
+    pool = list(guaranteed)
+    for m in fillers:
+        if len(pool) >= pool_size:
+            break
+        if m["material_id"] not in seen:
+            seen.add(m["material_id"])
+            pool.append(m)
+
+    pool.sort(key=lambda m: m["relevance_score"], reverse=True)
+    return pool
+
+
+# =================================================================
 # FUNCTION 2: Look up exact allowable stress at a given temperature
 # =================================================================
 def get_allowable_stress(stress_table_id, temp_C):
