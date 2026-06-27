@@ -3,7 +3,11 @@
 # Renders ranked material cards with color-coded ratings, comparison table,
 # pipeline transparency, and chat history.
 
+import html
+import json
+from datetime import datetime
 import streamlit as st
+import streamlit.components.v1 as components
 from reason import reason_about_query
 
 # =================================================================
@@ -88,6 +92,21 @@ st.markdown("""
 .banner-danger { background: rgba(190, 110, 110, 0.10); border-left: 3px solid #be6e6e; color: #d29a9a; }
 .banner-warn   { background: rgba(200, 150, 90, 0.10);  border-left: 3px solid #c8964a; color: #cbab82; }
 .muted { color: #8b9098; font-size: 0.8rem; }
+
+/* WhatsApp-style outgoing (user) message bubble — right aligned, green. */
+.wa-row { display: flex; margin: 0.35rem 0 0.15rem; }
+.wa-row.user { justify-content: flex-end; }
+.wa-bubble-user {
+    background-color: #005c4b;          /* WhatsApp dark-mode outgoing green */
+    color: #e9edef;
+    padding: 0.45rem 0.7rem;
+    border-radius: 12px 12px 3px 12px;  /* little tail on the bottom-right */
+    max-width: 78%;
+    font-size: 0.95rem;
+    line-height: 1.35;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+    overflow-wrap: anywhere;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -174,6 +193,8 @@ if "conversations" not in st.session_state:
     st.session_state.conversations = [{"title": "New chat", "messages": []}]
 if "current" not in st.session_state:
     st.session_state.current = 0
+if "editing_idx" not in st.session_state:
+    st.session_state.editing_idx = None   # index of the message being edited inline
 
 
 # =================================================================
@@ -184,6 +205,7 @@ with st.sidebar:
 
     if st.button("✛  New chat", use_container_width=True):
         convs = st.session_state.conversations
+        st.session_state.editing_idx = None
         # Reuse the current chat if it's already empty, instead of stacking blanks.
         if convs[st.session_state.current]["messages"]:
             convs.append({"title": "New chat", "messages": []})
@@ -205,6 +227,7 @@ with st.sidebar:
             type="primary" if is_cur else "secondary",
         ):
             st.session_state.current = i
+            st.session_state.editing_idx = None
             st.rerun()
 
     # Settings + reset pinned at the bottom.
@@ -461,7 +484,10 @@ conv = st.session_state.conversations[st.session_state.current]
 # Chat box is always pinned to the bottom regardless of where it's called.
 prompt = st.chat_input("Describe your design conditions…")
 if prompt and prompt.strip():
-    conv["messages"].append({"role": "user", "content": prompt.strip()})
+    conv["messages"].append({
+        "role": "user", "content": prompt.strip(),
+        "time": datetime.now().strftime("%H:%M"),
+    })
     if not conv["title"] or conv["title"] == "New chat":
         conv["title"] = prompt.strip()
 
@@ -476,16 +502,91 @@ if not conv["messages"]:
         unsafe_allow_html=True,
     )
 else:
-    # Replay the conversation as chat bubbles.
-    for msg in conv["messages"]:
-        with st.chat_message(msg["role"]):
-            if msg["role"] == "user":
-                st.markdown(msg["content"])
-            else:
-                render_result(msg["result"])
+    # Replay the conversation: user messages as right-aligned WhatsApp-style
+    # bubbles; under each message an inline action bar (regenerate / edit / copy)
+    # next to the send time, like a standard AI chat.
+    def user_bubble(text):
+        st.markdown(
+            f'<div class="wa-row user"><div class="wa-bubble-user">'
+            f'{html.escape(text)}</div></div>',
+            unsafe_allow_html=True,
+        )
 
-    # If the last turn is an unanswered user message, generate the answer now —
-    # the user bubble is already on screen, so this feels like a live reply.
+    def action_bar(idx, *, is_user, time_str):
+        # Right-aligned cluster: send time + small borderless icon buttons.
+        _, area = st.columns([0.52, 0.48])
+        with area:
+            if is_user:
+                tc, b_re, b_ed, b_cp = st.columns([0.40, 0.20, 0.20, 0.20])
+            else:
+                tc, b_re, b_cp = st.columns([0.60, 0.20, 0.20])
+            with tc:
+                if time_str:
+                    st.caption(time_str)
+            with b_re:
+                if st.button("🔄", key=f"regen_{idx}", type="tertiary", help="Regenerate"):
+                    # Keep this turn's user query, drop its answer + everything after.
+                    conv["messages"] = conv["messages"][: (idx + 1 if is_user else idx)]
+                    st.session_state.editing_idx = None
+                    st.rerun()
+            if is_user:
+                with b_ed:
+                    if st.button("✏️", key=f"edit_{idx}", type="tertiary", help="Edit"):
+                        st.session_state.editing_idx = idx
+                        st.rerun()
+            with b_cp:
+                if st.button("📋", key=f"copy_{idx}", type="tertiary", help="Copy"):
+                    st.session_state["_pending_copy"] = (
+                        conv["messages"][idx]["content"] if is_user
+                        else conv["messages"][idx]["result"].get("summary", "")
+                    )
+
+    for i, msg in enumerate(conv["messages"]):
+        if msg["role"] == "user":
+            if st.session_state.editing_idx == i:
+                # Inline edit mode (replaces the bubble while editing).
+                edited = st.text_area("Edit message", value=msg["content"], key=f"editbox_{i}")
+                save_c, cancel_c, _ = st.columns([0.2, 0.2, 0.6])
+                with save_c:
+                    if st.button("Save", key=f"save_{i}", type="primary", use_container_width=True):
+                        nt = edited.strip()
+                        if nt:
+                            conv["messages"] = conv["messages"][:i] + [{
+                                "role": "user", "content": nt,
+                                "time": datetime.now().strftime("%H:%M"),
+                            }]
+                            if i == 0:
+                                conv["title"] = nt
+                        st.session_state.editing_idx = None
+                        st.rerun()
+                with cancel_c:
+                    if st.button("Cancel", key=f"cancel_{i}", use_container_width=True):
+                        st.session_state.editing_idx = None
+                        st.rerun()
+            else:
+                user_bubble(msg["content"])
+                action_bar(i, is_user=True, time_str=msg.get("time", ""))
+        else:
+            with st.chat_message("assistant", avatar="🔧"):
+                render_result(msg["result"])
+            action_bar(i, is_user=False, time_str=msg.get("time", ""))
+
+    # One-shot client-side clipboard copy when a 📋 button was clicked.
+    pending_copy = st.session_state.pop("_pending_copy", None)
+    if pending_copy:
+        payload = json.dumps(pending_copy)
+        components.html(
+            "<script>const t=" + payload + ";"
+            "(navigator.clipboard&&navigator.clipboard.writeText)"
+            "?navigator.clipboard.writeText(t).catch(()=>{})"
+            ":(()=>{const a=document.createElement('textarea');a.value=t;"
+            "document.body.appendChild(a);a.select();try{document.execCommand('copy')}"
+            "catch(e){}a.remove();})();</script>",
+            height=0,
+        )
+        st.toast("Copied to clipboard", icon="📋")
+
+    # If the last turn is an unanswered user message, generate the answer now.
     if conv["messages"][-1]["role"] == "user":
         # Prior turns let the pipeline resolve follow-ups ("make it cheaper").
         prior = []
@@ -498,10 +599,13 @@ else:
                 prior.append({"query": pending_q, "materials": names})
                 pending_q = None
 
-        with st.chat_message("assistant"):
+        with st.chat_message("assistant", avatar="🔧"):
             with st.spinner("Searching database and reasoning…"):
                 result = reason_about_query(
                     conv["messages"][-1]["content"], top_k=top_k, history=prior
                 )
-            render_result(result)
-        conv["messages"].append({"role": "assistant", "result": result})
+        conv["messages"].append({
+            "role": "assistant", "result": result,
+            "time": datetime.now().strftime("%H:%M"),
+        })
+        st.rerun()
