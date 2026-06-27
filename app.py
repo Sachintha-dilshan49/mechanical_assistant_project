@@ -239,6 +239,8 @@ def render_result(result):
     # --- Query understanding (collapsible) ---
     with st.expander("How your query was interpreted"):
         understood = result.get("understood", {})
+        if result.get("resolved_query"):
+            st.markdown(f"**Follow-up resolved to:** *{result['resolved_query']}*")
         st.markdown(f"**Reframed as:** *{understood.get('semantic_query', '')}*")
         
         constraints = understood.get('extracted_constraints', {})
@@ -485,8 +487,21 @@ else:
     # If the last turn is an unanswered user message, generate the answer now —
     # the user bubble is already on screen, so this feels like a live reply.
     if conv["messages"][-1]["role"] == "user":
+        # Prior turns let the pipeline resolve follow-ups ("make it cheaper").
+        prior = []
+        pending_q = None
+        for m in conv["messages"][:-1]:
+            if m["role"] == "user":
+                pending_q = m["content"]
+            elif pending_q is not None:
+                names = [x.get("common_name", "") for x in m.get("result", {}).get("materials", [])]
+                prior.append({"query": pending_q, "materials": names})
+                pending_q = None
+
         with st.chat_message("assistant"):
             with st.spinner("Searching database and reasoning…"):
-                result = reason_about_query(conv["messages"][-1]["content"], top_k=top_k)
+                result = reason_about_query(
+                    conv["messages"][-1]["content"], top_k=top_k, history=prior
+                )
             render_result(result)
         conv["messages"].append({"role": "assistant", "result": result})

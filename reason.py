@@ -212,15 +212,62 @@ def build_fallback_summary(materials: list, query: str) -> dict:
 
 
 # -----------------------------------------------------------------
+# FOLLOW-UP RESOLUTION (make the chat conversation-aware)
+# -----------------------------------------------------------------
+CONTEXTUALIZE_PROMPT = """You rewrite a user's latest chat message into ONE standalone material-selection query.
+Use the recent conversation to resolve references like "it", "that one", "cheaper", "instead",
+"what about ...", "for saltwater". Keep the application/object from the conversation unless the user
+clearly switches to a new topic.
+
+Output ONLY the rewritten query on a single line — no quotes, no explanation. If the latest message
+is already self-contained or starts a new unrelated topic, output it unchanged.
+
+Recent conversation:
+{history_block}
+
+Latest message: {user_query}
+
+Standalone query:"""
+
+
+def contextualize_query(user_query: str, history: list) -> str:
+    """Rewrite a follow-up into a self-contained query using recent turns.
+    Best-effort: on any failure (or no history) returns the original message."""
+    if not history:
+        return user_query
+
+    lines = []
+    for turn in history[-3:]:                       # last few turns is enough context
+        mats = ", ".join((turn.get("materials") or [])[:3])
+        line = f'- User asked: "{turn.get("query", "")}"'
+        if mats:
+            line += f' -> recommended: {mats}'
+        lines.append(line)
+
+    prompt = CONTEXTUALIZE_PROMPT.format(history_block="\n".join(lines), user_query=user_query)
+    try:
+        resp = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+        text = (resp.text or "").strip().strip('"').strip()
+        rewritten = text.splitlines()[0].strip() if text else ""
+        return rewritten or user_query
+    except Exception as e:
+        print(f"  contextualize failed: {e}")
+        return user_query
+
+
+# -----------------------------------------------------------------
 # MAIN PIPELINE
 # -----------------------------------------------------------------
-def reason_about_query(user_query: str, top_k: int = 3) -> dict:
+def reason_about_query(user_query: str, top_k: int = 3, history: list = None) -> dict:
     """
     Full RAG pipeline with graceful degradation.
+    `history` (optional) is a list of prior turns [{"query": str, "materials": [names]}];
+    when present, a follow-up like "make it cheaper" is resolved against it first.
     Always returns materials if any matched; LLM summary is best-effort.
     """
     result = {
         "query": user_query,
+        "resolved_query": None,
         "understood": None,
         "materials": [],
         "stress_lookups": {},
@@ -229,35 +276,41 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
         "warning": None,
         "error": None,
     }
-    
+
+    # Step 0: resolve a follow-up against the conversation so "make it cheaper" /
+    # "what about saltwater" inherit the earlier subject. No-op for a first message.
+    search_query = contextualize_query(user_query, history) if history else user_query
+    if search_query != user_query:
+        result["resolved_query"] = search_query
+
     # Step 1: Understand query (with fallback)
     understood = None
     try:
-        understood = understand_query(user_query)
+        understood = understand_query(search_query)
     except Exception as e:
         print(f"  understand_query failed: {e}")
     
     if not understood:
         understood = {
-            "semantic_query": user_query,
+            "semantic_query": search_query,
             "filters": {},
             "extracted_constraints": {},
             "reasoning": "Query understanding unavailable; using raw text for semantic search.",
         }
         result["warning"] = "Could not parse query structure - searched semantically only."
-    
+
     result["understood"] = understood
-    
-    semantic_query = understood.get("semantic_query", user_query)
+
+    semantic_query = understood.get("semantic_query", search_query)
     filters = understood.get("filters", {})
     constraints = understood.get("extracted_constraints", {})
-    
+
     family = constraints.get("material_family")
 
     # Step 2: Retrieve a BROAD candidate pool. Filters only gather candidates here;
     # the reasoning LLM makes the actual choice, so a too-tight filter can no longer
     # silently delete the right answer before the model ever sees it.
-    POOL_SIZE = 15
+    POOL_SIZE = 18
     pool = find_candidates(
         query_text=semantic_query,
         filters=filters if filters else None,
@@ -272,7 +325,7 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
     # Step 3: Ask the LLM to SELECT and RANK the best materials from the pool.
     materials_block = "\n\n".join(format_material_for_prompt(m) for m in pool)
     final_prompt = REASONING_PROMPT_TEMPLATE.format(
-        user_query=user_query,
+        user_query=search_query,
         semantic_query=semantic_query,
         max_select=top_k,
         materials_block=materials_block,
@@ -312,7 +365,7 @@ def reason_about_query(user_query: str, top_k: int = 3) -> dict:
     if not selected:
         # Fallback: take the best pool matches with rule-based reasoning.
         selected = pool[:top_k]
-        fb = build_fallback_summary(selected, user_query)
+        fb = build_fallback_summary(selected, search_query)
         summary = summary or fb["overall_summary"]
         reasoning = fb["material_reasoning"]
         if not result["warning"]:
