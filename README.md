@@ -30,3 +30,28 @@ User query → LLM extracts filters → ChromaDB (semantic) + SQLite (exact valu
 - **google-genai** — Gemini LLM for query understanding + reasoning
 
 ---
+
+## Where the Data Lives
+
+**SQLite (`data/materials.db`) is the source of truth.** It holds the materials
+table and the allowable-stress tables. Missing properties are `NULL`.
+
+**ChromaDB (`data/chroma_db/`) is a derived search index.** It holds embeddings
+for semantic search, and a copy of each material's properties for filtering.
+Delete it any time — `reindex.py` rebuilds it in under a minute. `NULL` becomes
+the `NOT_FOUND` sentinel on the way in, since Chroma metadata can't hold nulls.
+
+## Running
+
+```bash
+venv\Scripts\streamlit run app.py     # start the app
+py init_db.py                         # first-time setup: seed SQLite from the CSVs
+py reindex.py                         # rebuild the search index from SQLite
+```
+
+`init_db.py` refuses to overwrite a populated table (`--force` overrides), so
+re-running it can't discard materials added after the initial seed.
+`build_v15_dataset.py` regenerates the curated CSVs and is a one-time seed
+source — it does not feed the live database.
+
+---
