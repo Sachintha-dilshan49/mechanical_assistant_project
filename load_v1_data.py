@@ -115,12 +115,6 @@ print(f"    Inserted {len(stress_df)} rows into SQLite")
 # ============================================================
 print("\n[B] Loading materials into ChromaDB...")
 
-# Optional bulk dataset (Kaggle mechanical-properties dump), already cleaned and
-# mapped into our schema by build_kaggle_dataset.py. Loaded into the same pool
-# when present; skipped silently when absent.
-KAGGLE_CSV = "data/kaggle_clean.csv"
-
-
 def build_metadata(row):
     """Map one CSV row (all string cells) to a ChromaDB metadata dict."""
     return {
@@ -196,10 +190,11 @@ collection = client.create_collection(
     metadata={"description": "Engineering materials for design selection"}
 )
 
-# Curated 66 always load; the Kaggle bulk dataset loads too when present.
+# The curated CSV is the only source. A bulk scrape was tried and dropped: its
+# rows carry raw tensile numbers but none of the corrosion / chemical-resistance /
+# application context, so they crowded good candidates out of the retrieval pool
+# and degraded the answers. Every row here is hand-verified with a cited source.
 sources_to_load = [("curated", MATERIALS_CSV)]
-if Path(KAGGLE_CSV).exists():
-    sources_to_load.append(("kaggle bulk", KAGGLE_CSV))
 
 ids = []
 documents = []
@@ -230,8 +225,8 @@ if unknown:
 print(f"    Material classes loaded ({len(seen_classes)}): {', '.join(sorted(seen_classes))}")
 
 print(f"    Embedding {len(ids)} documents and storing... (first run downloads model)")
-# Batch the add — the Kaggle merge pushes this to ~2,000 rows, and batching keeps
-# us under ChromaDB's max batch size and shows progress on slow CPU embedding.
+# Batch the add — keeps us under ChromaDB's max batch size and shows progress
+# on slow CPU embedding.
 BATCH = 500
 for start in range(0, len(ids), BATCH):
     end = start + BATCH

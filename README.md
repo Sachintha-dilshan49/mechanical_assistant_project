@@ -2,7 +2,7 @@
 
 An AI tool that helps mechanical engineering students pick the right material for a design task. Describe the operating conditions in plain English; get back suitable metals with properties, reasoning, and citations.
 
-**Status:** Work in progress. Full RAG pipeline working (query understanding → retrieval → reasoning → Streamlit UI) with 30 materials across 14 classes loaded.
+**Status:** Work in progress. Full RAG pipeline working (query understanding → retrieval → reasoning → Streamlit UI) with 66 curated materials across 24 classes loaded. Every row is hand-verified with a cited source — bulk scraped datasets are deliberately excluded, since rows without corrosion, chemical-resistance and application context crowd out good candidates and degrade the recommendations.
 
 ---
 
