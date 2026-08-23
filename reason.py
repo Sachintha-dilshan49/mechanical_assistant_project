@@ -263,6 +263,72 @@ def contextualize_query(user_query: str, history: list) -> str:
 
 
 # -----------------------------------------------------------------
+# INTENT GATE
+# Not every message is a design question. Without this, "hey" runs the full
+# pipeline and comes back with three material cards, which is nonsense.
+# Matching is on the WHOLE normalised message, so "hey what material for a
+# boat" is still treated as a real query.
+# -----------------------------------------------------------------
+GREETINGS = {
+    "hi", "hey", "hello", "yo", "hiya", "howdy", "sup", "heya",
+    "hey there", "hi there", "hello there", "good morning",
+    "good afternoon", "good evening", "whats up", "wassup", "greetings",
+}
+THANKS = {"thanks", "thank you", "thx", "ty", "cheers", "appreciate it",
+          "thanks a lot", "thank you so much", "nice", "great", "cool", "awesome"}
+FAREWELLS = {"bye", "goodbye", "see you", "cya", "later", "good night", "gn"}
+ACKS = {"ok", "okay", "k", "got it", "alright", "sure", "yes", "yeah", "yep",
+        "no", "nope", "hmm", "hm", "idk", "test", "testing"}
+CAPABILITY = {"who are you", "what are you", "what can you do", "help",
+              "what is this", "how does this work", "what do you do",
+              "how do i use this", "what can i ask"}
+
+INTRO = (
+    "I'm a material selection assistant. Describe what you're designing and I'll "
+    "recommend materials from a database of 66 verified engineering materials, "
+    "with real property values and sources.\n\n"
+    "Try something like:\n"
+    "- *a shaft that carries 300 MPa at 200 C*\n"
+    "- *a cheap plastic housing that sits outdoors in the sun*\n"
+    "- *a boat fitting that will not corrode in seawater*\n\n"
+    "Worth mentioning: temperature, environment (seawater, chemicals, outdoors), "
+    "loads, and whether cost or weight matters most."
+)
+
+SMALL_TALK_REPLIES = {
+    "greeting":   "Hello. " + INTRO,
+    "thanks":     "You're welcome. Ask me about another design whenever you need to.",
+    "farewell":   "Goodbye - come back when you have another material to pick.",
+    "ack":        "Ready when you are. " + INTRO,
+    "capability": INTRO,
+}
+
+
+def _normalise(text):
+    """Lowercase, drop punctuation and emoji, collapse whitespace."""
+    cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " "
+                      for ch in (text or "").lower())
+    return " ".join(cleaned.split())
+
+
+def small_talk_reply(user_query):
+    """A canned reply when the WHOLE message is small talk, else None.
+
+    Deliberately an exact match on the full normalised message: a keyword scan
+    would hijack real queries that merely open with a greeting.
+    """
+    t = _normalise(user_query)
+    if not t:
+        return SMALL_TALK_REPLIES["greeting"]
+    for group, kind in ((GREETINGS, "greeting"), (THANKS, "thanks"),
+                        (FAREWELLS, "farewell"), (ACKS, "ack"),
+                        (CAPABILITY, "capability")):
+        if t in group:
+            return SMALL_TALK_REPLIES[kind]
+    return None
+
+
+# -----------------------------------------------------------------
 # MAIN PIPELINE
 # -----------------------------------------------------------------
 def reason_about_query(user_query: str, top_k: int = 3, history: list = None) -> dict:
@@ -282,7 +348,16 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
         "reasoning": {},
         "warning": None,
         "error": None,
+        "chat_reply": None,
     }
+
+    # Step 0a: greetings, thanks and "what can you do" get a direct answer.
+    # Costs no API call and keeps the pipeline for actual design questions.
+    reply = small_talk_reply(user_query)
+    if reply:
+        result["chat_reply"] = reply
+        result["summary"] = reply
+        return result
 
     # Step 0: resolve a follow-up against the conversation so "make it cheaper" /
     # "what about saltwater" inherit the earlier subject. No-op for a first message.
@@ -305,6 +380,17 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
             "reasoning": "Query understanding unavailable; using raw text for semantic search.",
         }
         result["warning"] = "Could not parse query structure - searched semantically only."
+
+    # The word list catches the common cases; understand_query flags anything
+    # else that is not a material question ("what is the weather in Paris").
+    if str(understood.get("intent", "material_query")).lower() == "off_topic":
+        result["chat_reply"] = (
+            "That one is outside what I can help with - I only recommend "
+            "engineering materials.\n\n" + INTRO
+        )
+        result["summary"] = result["chat_reply"]
+        result["understood"] = understood
+        return result
 
     result["understood"] = understood
 

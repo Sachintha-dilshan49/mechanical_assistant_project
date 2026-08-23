@@ -244,6 +244,11 @@ with st.sidebar:
 # RENDER RESULT
 # =================================================================
 def render_result(result):
+    # --- Small talk / off-topic: a plain reply, no material cards ---
+    if result.get("chat_reply"):
+        st.markdown(result["chat_reply"])
+        return
+
     # --- Error case ---
     if result.get("error"):
         st.error(f"⚠️ {result['error']}")
@@ -595,8 +600,10 @@ else:
             if m["role"] == "user":
                 pending_q = m["content"]
             elif pending_q is not None:
-                names = [x.get("common_name", "") for x in m.get("result", {}).get("materials", [])]
-                prior.append({"query": pending_q, "materials": names})
+                res = m.get("result", {})
+                if not res.get("chat_reply"):     # small talk is not design context
+                    names = [x.get("common_name", "") for x in res.get("materials", [])]
+                    prior.append({"query": pending_q, "materials": names})
                 pending_q = None
 
         with st.chat_message("assistant", avatar="🔧"):

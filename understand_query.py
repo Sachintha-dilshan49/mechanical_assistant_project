@@ -103,6 +103,7 @@ filter over an arbitrary numeric cutoff.
 
 OUTPUT FORMAT (must be valid JSON, no other text):
 {
+    "intent": "<material_query, or off_topic for greetings, small talk, or anything not about choosing a material>",
     "semantic_query": "<short rephrasing of the design intent, 5-15 words>",
     "filters": { <metadata filters as a dict> },
     "extracted_constraints": {
@@ -124,6 +125,7 @@ EXAMPLES:
 Query: "I need a lightweight material for marine use"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "lightweight corrosion-resistant material",
     "filters": {"corrosion_seawater": {"$gte": 4}},
     "extracted_constraints": {
@@ -143,6 +145,7 @@ Output:
 Query: "Material for a shaft that must handle 300 MPa stress at 200 degrees C"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "shaft material with high strength at elevated temperature",
     "filters": {
         "yield_strength_MPa": {"$gte": 300},
@@ -165,6 +168,7 @@ Output:
 Query: "A low-friction plastic for a gear that resists oils and fuels"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "wear-resistant engineering plastic for a gear, fuel resistant",
     "filters": {
         "material_class": {"$in": ["plastic_thermoplastic", "plastic_thermoset"]},
@@ -187,6 +191,7 @@ Output:
 Query: "A brittle electrical insulator that survives 1000 C"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "high-temperature electrically insulating ceramic",
     "filters": {
         "material_class": {"$in": ["ceramic_oxide", "ceramic_carbide", "ceramic_glass"]},
@@ -209,6 +214,7 @@ Output:
 Query: "Strongest, stiffest material for an aerospace panel I can bond with adhesive"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "high specific strength and stiffness composite for aerospace panel",
     "filters": {
         "material_class": {"$in": ["composite_cfrp", "composite_gfrp", "composite_kevlar"]}
@@ -230,6 +236,7 @@ Output:
 Query: "I want to make a toy boat, what material should I use?"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "lightweight low-cost waterproof plastic for a small toy boat hull",
     "filters": {
         "material_class": {"$in": ["plastic_thermoplastic", "plastic_thermoset"]},
@@ -252,6 +259,7 @@ Output:
 Query: "a hinge for my garden gate that won't rust outside"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "weather-resistant non-rusting metal for an outdoor gate hinge",
     "filters": {
         "corrosion_atmospheric": {"$gte": 4}
@@ -273,6 +281,7 @@ Output:
 Query: "what is the perfect material for a car body?"
 Output:
 {
+    "intent": "material_query",
     "semantic_query": "formable low-cost sheet metal for automotive body panels",
     "filters": {
         "material_class": {"$in": ["carbon_steel_low", "carbon_steel_medium", "aluminum_wrought"]}
@@ -290,6 +299,12 @@ Output:
     },
     "reasoning": "Car bodies are overwhelmingly formable low-carbon sheet steel or aluminum (good formability, weldability, crash energy absorption, low cost); composites appear only on specialty cars. Lightweight is a priority here, NOT a hard density cutoff that would wrongly exclude steel."
 }
+
+INTENT:
+Set "intent" to "off_topic" when the message is not a request for a material -
+a greeting, thanks, chit-chat, or a question about something else entirely. In that
+case the other fields may be empty. Anything describing an object, a part, or design
+conditions is "material_query", even when it is vague.
 
 Now process the user's query below. Output ONLY the JSON, no other text, no markdown fences.
 """
