@@ -24,16 +24,25 @@ print("=" * 62)
 # Keys
 # -----------------------------------------------------------------
 print("\n[1] API keys in .env")
-for name in ("GROQ_API_KEY", "GEMINI_API_KEY"):
+for name in ("GROQ_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"):
     key = os.getenv(name)
     state = f"set ({len(key)} chars)" if key else "MISSING"
     print(f"    {name:<16} {state}")
 
-providers = llm.available_providers()
+providers = llm.available_providers("smart")
 if not providers:
     print("\n    No usable provider. Add a key to .env and re-run.")
     raise SystemExit(1)
-print(f"\n    Failover order: {' -> '.join(providers)}")
+print(f"\n    fast  task order: {' -> '.join(llm.available_providers('fast'))}")
+print(f"    smart task order: {' -> '.join(llm.available_providers('smart'))}")
+
+entries, size = llm.cache_stats()
+print(f"\n    Prompt cache: {entries} cached responses ({size} chars). "
+      f"A cache hit costs no quota and returns instantly.")
+
+if "deepseek" in providers:
+    print("\n    NOTE: DeepSeek's free grant is 5M tokens and expires 30 days after")
+    print("          signup - treat it as overflow capacity, not a permanent tier.")
 
 # -----------------------------------------------------------------
 # What models the Groq key can actually see
@@ -58,6 +67,21 @@ if "groq" in providers:
 # -----------------------------------------------------------------
 # Live calls
 # -----------------------------------------------------------------
+if "deepseek" in providers:
+    print("\n[2b] Model ids your DeepSeek key can reach")
+    try:
+        ds = sorted(m.id for m in llm._deepseek_client().models.list().data)
+        for m in ds:
+            configured = any(m in v for v in llm.DEEPSEEK_MODELS.values())
+            print(f"    {'* ' if configured else '  '}{m}")
+        for task, wanted in llm.DEEPSEEK_MODELS.items():
+            missing = [w for w in wanted if w not in ds]
+            if missing:
+                print(f"    WARNING: '{task}' lists unavailable ids: {missing}")
+                print(f"             Set DEEPSEEK_MODEL_{task.upper()} in .env.")
+    except Exception as exc:
+        print(f"    Could not list models: {exc}")
+
 print("\n[3] Live call per task profile")
 for task in ("fast", "smart"):
     text, warning = llm.generate(

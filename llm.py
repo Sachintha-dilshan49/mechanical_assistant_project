@@ -2,17 +2,21 @@
 llm.py
 One place to ask a language model for text, with automatic failover.
 
-Groq is tried first (its free tier allows far more tokens per day than Gemini's),
-and Gemini takes over when Groq is rate-limited or out of quota. Nothing else in
-the project needs to know which provider answered.
+Providers are tried in order and the next one takes over when the current is
+rate-limited or out of quota. Nothing else in the project needs to know which
+one answered. Identical prompts are served from a local cache, which matters a
+lot in practice: benchmarking and demos repeat the same queries, and every cache
+hit is a query that costs no quota and returns instantly.
 
 Two task profiles:
     "fast"  - query understanding, follow-up rewriting. Small, cheap models.
     "smart" - the reasoning step that picks and ranks materials.
 
 Configure in .env:
-    GROQ_API_KEY=...          # optional; without it Gemini is used alone
-    GEMINI_API_KEY=...        # optional; without it Groq is used alone
+    GROQ_API_KEY=...          # optional
+    GEMINI_API_KEY=...        # optional
+    DEEPSEEK_API_KEY=...      # optional; new accounts get 5M free tokens (30 days)
+    LLM_CACHE=0               # optional; set to 0 to disable the prompt cache
     GROQ_MODEL_SMART=...      # optional overrides if a model id is retired
     GROQ_MODEL_FAST=...
     LLM_PRIMARY=groq|gemini        # optional; forces ONE provider for both tasks
@@ -48,6 +52,14 @@ GROQ_MODELS = {
 GEMINI_MODELS = {
     "smart": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
     "fast":  ["gemini-2.5-flash-lite", "gemini-2.5-flash"],
+}
+
+# DeepSeek is OpenAI-compatible at https://api.deepseek.com. There is no standing
+# free tier - new accounts get a 5M-token grant that expires after 30 days - so it
+# is a useful third fallback rather than something to lean on permanently.
+DEEPSEEK_MODELS = {
+    "smart": [os.getenv("DEEPSEEK_MODEL_SMART", "deepseek-v4-pro"), "deepseek-v4-flash"],
+    "fast":  [os.getenv("DEEPSEEK_MODEL_FAST", "deepseek-v4-flash"), "deepseek-v4-pro"],
 }
 
 # How long to stop asking a provider after it reports an exhausted quota.
@@ -105,13 +117,37 @@ TASK_PRIMARY = {
 }
 
 
+def _deepseek_client():
+    if "deepseek" not in _clients:
+        key = os.getenv("DEEPSEEK_API_KEY")
+        if not key:
+            _clients["deepseek"] = None
+        else:
+            try:
+                from openai import OpenAI
+                _clients["deepseek"] = OpenAI(api_key=key,
+                                              base_url="https://api.deepseek.com")
+            except ImportError:
+                print("  [llm] openai package not installed - skipping DeepSeek")
+                _clients["deepseek"] = None
+    return _clients["deepseek"]
+
+
+_CLIENT_GETTERS = {
+    "groq": _groq_client,
+    "gemini": _gemini_client,
+    "deepseek": _deepseek_client,
+}
+
+
 def available_providers(task="smart"):
     """Provider names that have a usable key, in failover order for this task."""
     forced = (os.getenv("LLM_PRIMARY") or "").strip().lower()
     primary = forced or TASK_PRIMARY.get(task, "groq")
-    order = ["gemini", "groq"] if primary == "gemini" else ["groq", "gemini"]
-    return [p for p in order
-            if (_groq_client() if p == "groq" else _gemini_client()) is not None]
+    # Primary first, then the rest as fallbacks. DeepSeek sits last by default:
+    # its free grant expires, so it should absorb overflow rather than the load.
+    order = [primary] + [p for p in ("groq", "gemini", "deepseek") if p != primary]
+    return [p for p in order if _CLIENT_GETTERS.get(p, lambda: None)() is not None]
 
 
 # =================================================================
@@ -192,8 +228,112 @@ def _call_gemini(model, prompt, json_output):
     return resp.text
 
 
-_CALLERS = {"groq": _call_groq, "gemini": _call_gemini}
-_MODELS = {"groq": GROQ_MODELS, "gemini": GEMINI_MODELS}
+def _call_deepseek(model, prompt, json_output):
+    kwargs = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 4096,
+    }
+    if json_output:
+        kwargs["response_format"] = {"type": "json_object"}
+    try:
+        resp = _deepseek_client().chat.completions.create(**kwargs)
+    except Exception as exc:
+        if json_output and "response_format" in str(exc).lower():
+            kwargs.pop("response_format")
+            resp = _deepseek_client().chat.completions.create(**kwargs)
+        else:
+            raise
+    return resp.choices[0].message.content
+
+
+_CALLERS = {"groq": _call_groq, "gemini": _call_gemini, "deepseek": _call_deepseek}
+_MODELS = {"groq": GROQ_MODELS, "gemini": GEMINI_MODELS, "deepseek": DEEPSEEK_MODELS}
+
+
+# =================================================================
+# PROMPT CACHE
+# The same prompt always gets the same answer back, without spending quota.
+# This is not a micro-optimisation: a day of benchmarking and demoing repeats
+# the same handful of queries, and that is exactly what exhausts a free tier.
+# The cache is disposable - delete the file and it rebuilds.
+# =================================================================
+CACHE_FILE = "data/llm_cache.db"
+CACHE_TTL_S = 30 * 24 * 3600
+_cache_ready = False
+
+
+def _cache_enabled():
+    return (os.getenv("LLM_CACHE") or "1").strip() not in ("0", "false", "no")
+
+
+def _cache_conn():
+    """Cache connection, or None if the cache is off or unusable."""
+    global _cache_ready
+    if not _cache_enabled():
+        return None
+    try:
+        import sqlite3
+        conn = sqlite3.connect(CACHE_FILE)
+        if not _cache_ready:
+            conn.execute("""CREATE TABLE IF NOT EXISTS llm_cache (
+                                key TEXT PRIMARY KEY,
+                                response TEXT NOT NULL,
+                                created_at REAL NOT NULL)""")
+            conn.commit()
+            _cache_ready = True
+        return conn
+    except Exception:
+        return None       # a broken cache must never break generation
+
+
+def _cache_key(prompt, task, json_output):
+    import hashlib
+    raw = f"{task}|{json_output}|{prompt}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _cache_get(key):
+    conn = _cache_conn()
+    if conn is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT response, created_at FROM llm_cache WHERE key = ?", (key,)).fetchone()
+        conn.close()
+        if row and (time.time() - row[1]) < CACHE_TTL_S:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+
+def _cache_put(key, response):
+    conn = _cache_conn()
+    if conn is None:
+        return
+    try:
+        conn.execute("INSERT OR REPLACE INTO llm_cache (key, response, created_at) "
+                     "VALUES (?, ?, ?)", (key, response, time.time()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def cache_stats():
+    """(entries, bytes) held in the prompt cache."""
+    conn = _cache_conn()
+    if conn is None:
+        return (0, 0)
+    try:
+        n = conn.execute("SELECT COUNT(*), COALESCE(SUM(LENGTH(response)), 0) "
+                         "FROM llm_cache").fetchone()
+        conn.close()
+        return (n[0], n[1])
+    except Exception:
+        return (0, 0)
 
 
 # =================================================================
@@ -206,10 +346,15 @@ def generate(prompt, task="smart", json_output=False):
     is a short note for the UI when the answer did not come from the primary
     provider, else None.
     """
+    key = _cache_key(prompt, task, json_output)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached, None
+
     providers = available_providers(task)
     if not providers:
-        return None, ("No LLM API key configured - set GROQ_API_KEY or "
-                      "GEMINI_API_KEY in your .env file.")
+        return None, ("No LLM API key configured - set GROQ_API_KEY, "
+                      "GEMINI_API_KEY or DEEPSEEK_API_KEY in your .env file.")
 
     primary = providers[0]
     last_error = None
@@ -225,6 +370,7 @@ def generate(prompt, task="smart", json_output=False):
                     text = _CALLERS[provider](model, prompt, json_output)
                     if not text:
                         break                      # empty part: try the next model
+                    _cache_put(key, text)
                     warning = None
                     if provider != primary:
                         warning = (f"{primary.title()} was unavailable - answered "

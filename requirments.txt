@@ -9,3 +9,4 @@ python-dotenv>=1.0.0
 # Only one key is strictly required, but both give you the failover.
 groq>=0.11.0
 google-genai>=0.3.0
+openai>=1.40.0          # DeepSeek uses the OpenAI-compatible API

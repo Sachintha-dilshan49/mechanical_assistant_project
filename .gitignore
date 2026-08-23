@@ -20,6 +20,7 @@ ENV/
 # ============================================
 data/chroma_db/
 data/materials.db
+data/llm_cache.db
 
 # ============================================
 # IDE settings
