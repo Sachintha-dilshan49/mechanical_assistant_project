@@ -113,7 +113,8 @@ def find_materials(query_text, filters=None, top_k=3):
         mat = dict(results['metadatas'][0][i])
         mat["material_id"] = mat_id
         mat["description_text"] = results['documents'][0][i]
-        mat["relevance_score"] = 1 - results['distances'][0][i]
+        distance = results['distances'][0][i]
+        mat["relevance_score"] = max(0.0, min(1.0, 1 - distance / 2))
         materials.append(mat)
 
     return materials

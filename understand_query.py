@@ -99,6 +99,7 @@ filter over an arbitrary numeric cutoff.
 OUTPUT FORMAT (valid JSON only, no other text):
 {
     "intent": "<material_query, or off_topic for greetings, small talk, or anything not about choosing a material>",
+    "off_topic_reason": "<only when intent is off_topic: one short clause naming what the user actually asked for, e.g. 'That's a maths problem' or 'That's a general knowledge question'>",
     "semantic_query": "<short rephrasing of the design intent, 5-15 words>",
     "filters": { <metadata filters> },
     "extracted_constraints": { <only the ones that apply - OMIT any that would be null> },
@@ -163,12 +164,20 @@ Query: "what is the perfect material for a car body?"
  "reasoning":"Car bodies are formable low-carbon sheet steel or aluminum. Lightweight is a priority, NOT a density cutoff that would exclude steel."}
 
 Query: "hello"
-{"intent":"off_topic","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Greeting, not a material request."}
+{"intent":"off_topic","off_topic_reason":"That's a greeting","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Greeting, not a material request."}
+
+Query: "solve 2x + 5 = 15 for me"
+{"intent":"off_topic","off_topic_reason":"That's a maths problem","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Algebra, nothing to do with choosing a material."}
+
+Query: "what materials do you have in the database?"
+{"intent":"off_topic","off_topic_reason":"That's a question about the tool itself rather than a design","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Asking about coverage, not asking for a recommendation."}
 
 INTENT:
 Set "intent" to "off_topic" when the message is not a request for a material -
-a greeting, thanks, chit-chat, or a question about something else entirely. In that
-case the other fields may be empty. Anything describing an object, a part, or design
+a greeting, thanks, chit-chat, a question about the tool itself, or a question about
+some other subject entirely (maths, coding, trivia). In that case the other fields may
+be empty, but ALWAYS give a short "off_topic_reason" naming what was actually asked,
+so the user gets a real explanation instead of a generic refusal. Anything describing an object, a part, or design
 conditions is "material_query", even when it is vague.
 
 Now process the user's query below. Output ONLY the JSON, no other text, no markdown fences.

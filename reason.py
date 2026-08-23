@@ -3,6 +3,7 @@
 # Returns structured data for the UI to render as cards.
 
 import json
+import re
 
 import llm
 from understand_query import understand_query
@@ -43,6 +44,8 @@ INTERPRET PROPERTIES BY FAMILY (material_class):
 - COMPOSITES (composite_*): properties are directional (especially composite_cfrp); for cfrp note
   that galvanic isolation from aluminium is required.
 
+{coverage_note}
+
 CANDIDATE POOL:
 {materials_block}
 
@@ -57,6 +60,56 @@ Output STRICT JSON only (no markdown fences, no other text):
 }}
 The "selected" list must be ranked best-first and contain ONLY material_id values that appear in the
 pool above. Order matters — the first entry is your #1 recommendation."""
+
+
+# -----------------------------------------------------------------
+# DATABASE COVERAGE
+# The pool can only ever contain what the curated database holds. Without saying
+# so, the model happily answers "rubber O-ring" with a cast epoxy and sounds
+# certain about it. Naming the gap is the difference between a useful tool and a
+# confidently wrong one.
+# -----------------------------------------------------------------
+_ABSENT_FAMILIES = ("elastomers / rubber (NBR, EPDM, silicone, natural rubber)",
+                    "wood and engineered timber",
+                    "concrete, masonry and stone",
+                    "foams (EPS, PU, structural foam)",
+                    "spring tempers and music wire",
+                    "printable filament grades (PLA, PETG)")
+
+_coverage_cache = None
+
+
+def coverage_note() -> str:
+    """A statement of what the database does and does not contain.
+
+    Built from the live class list so it stays true as materials are added.
+    """
+    global _coverage_cache
+    if _coverage_cache is not None:
+        return _coverage_cache
+    try:
+        import db
+        conn = db.connect()
+        classes = sorted({r["material_class"] for r in db.fetch_materials(conn)})
+        total = db.count_materials(conn)
+        conn.close()
+    except Exception:
+        _coverage_cache = ""
+        return _coverage_cache
+
+    absent = [f for f in _ABSENT_FAMILIES
+              if not any(f.split()[0].lower().strip(",") in c for c in classes)]
+    _coverage_cache = (
+        f"DATABASE COVERAGE ({total} materials). The pool above is everything available; "
+        f"there is nothing else to fall back on.\n"
+        f"Classes held: {', '.join(classes)}.\n"
+        f"NOT in the database: {'; '.join(absent)}.\n"
+        f"If this application genuinely needs a material family that is NOT held, say so "
+        f"PLAINLY in the first sentence of overall_summary, name the family that would "
+        f"actually suit the job, and present the listed candidates as the nearest available "
+        f"options rather than as correct answers. Never imply a poor substitute is suitable."
+    )
+    return _coverage_cache
 
 
 def _num(m, key):
@@ -196,11 +249,16 @@ def build_fallback_summary(materials: list, query: str) -> dict:
         return {"overall_summary": "", "material_reasoning": {}}
 
     top = materials[0]
+    # This runs when NO model was reachable, so nothing has judged whether these
+    # materials actually suit the job - they are just the closest text matches.
+    # Saying "materials matching your query" here would be a straight lie, and it
+    # is exactly how a foam query ends up recommending Kevlar composite.
     summary = (
-        f"Found {len(materials)} candidate materials matching your query. "
-        f"The top match is {top.get('common_name')}. "
-        f"Database results are shown below - review the property cards "
-        f"to compare materials. (AI-written summary unavailable due to service load.)"
+        f"**AI reasoning is unavailable right now, so these are NOT vetted "
+        f"recommendations.** Listed below are the {len(materials)} closest matches by "
+        f"text similarity only - nothing has checked that they suit your application. "
+        f"The nearest match was {top.get('common_name')}. Please compare the property "
+        f"cards yourself, and re-run the query later for a proper recommendation."
     )
 
     reasoning = {}
@@ -239,13 +297,13 @@ def build_fallback_summary(materials: list, query: str) -> dict:
 
         if parts:
             reasoning[mat["material_id"]] = (
-                f"Matched the query with: {', '.join(parts)}. "
-                f"See typical applications and warnings below for details."
+                f"Not assessed for your application. Notable properties: "
+                f"{', '.join(parts)}. Check the warnings below before using it."
             )
         else:
             reasoning[mat["material_id"]] = (
-                "Retrieved as a candidate by semantic relevance. "
-                "Review properties and warnings below."
+                "Not assessed for your application - retrieved by text similarity "
+                "only. Check the properties and warnings below."
             )
 
     return {"overall_summary": summary, "material_reasoning": reasoning}
@@ -312,53 +370,162 @@ THANKS = {"thanks", "thank you", "thx", "ty", "cheers", "appreciate it",
 FAREWELLS = {"bye", "goodbye", "see you", "cya", "later", "good night", "gn"}
 ACKS = {"ok", "okay", "k", "got it", "alright", "sure", "yes", "yeah", "yep",
         "no", "nope", "hmm", "hm", "idk", "test", "testing"}
-CAPABILITY = {"who are you", "what are you", "what can you do", "help",
-              "what is this", "how does this work", "what do you do",
-              "how do i use this", "what can i ask"}
 
-INTRO = (
-    "I'm a material selection assistant. Describe what you're designing and I'll "
-    "recommend materials from a database of 66 verified engineering materials, "
-    "with real property values and sources.\n\n"
-    "Try something like:\n"
+# Questions ABOUT the tool rather than about a material. Anchored to the whole
+# message so "what materials for a boat hull" stays a design question - a bare
+# substring check on "what materials" would hijack it.
+ABOUT_SYSTEM_PATTERNS = [
+    r"^what (do |does |can )?(u|you|this|it|the system|the app) ?(have|has|hold|contain|offer|do|does)?$",
+    r"^what (are|is) (these|this|that|it)( system| app| tool| thing| for)?$",
+    r"^what(?:'s| is) (this|it)( about| for)?$",
+    # These must END here. A trailing wildcard would swallow "what materials do
+    # you have FOR MARINE USE", which is a design question, not a coverage one.
+    r"^what (kind of |type of |types of )?(data|materials|classes|families)"
+    r"( (do|does) (you|it|this|the system) (have|hold|contain|offer))?$",
+    r"^what (materials|classes|families|data) are (there|available)$",
+    r"^what (materials|classes|families) (are|is) in (your|the) (database|registry)$",
+    r"^how many (materials|records|rows|things)( (do|does) (you|it|this) have| are there)?$",
+    r"^(list|show)( me)?( all)?( the)? (materials|database|registry|classes)$",
+    r"^what(?:'s| is) in (your|the) (database|registry|system)$",
+    r"^what can (you do|i ask|this do|it do|i do (here|with this))$",
+    r"^(who|what) (are|r) (you|u)$",
+    r"^(how does (this|it) work|how do i use (this|it)|help|what do you do)$",
+    r"^what (database|dataset|registry) (do you|does it) use$",
+]
+
+SMALL_TALK_REPLIES = {
+    "thanks":   "You're welcome. Ask me about another design whenever you need to.",
+    "farewell": "Goodbye - come back when you have another material to pick.",
+}
+
+EXAMPLES_BLOCK = (
+    "Try asking:\n"
     "- *a shaft that carries 300 MPa at 200 C*\n"
     "- *a cheap plastic housing that sits outdoors in the sun*\n"
     "- *a boat fitting that will not corrode in seawater*\n\n"
-    "Worth mentioning: temperature, environment (seawater, chemicals, outdoors), "
-    "loads, and whether cost or weight matters most."
+    "The more you say about temperature, environment, loads and whether cost or "
+    "weight matters, the better the recommendation."
 )
 
-SMALL_TALK_REPLIES = {
-    "greeting":   "Hello. " + INTRO,
-    "thanks":     "You're welcome. Ask me about another design whenever you need to.",
-    "farewell":   "Goodbye - come back when you have another material to pick.",
-    "ack":        "Ready when you are. " + INTRO,
-    "capability": INTRO,
-}
+# Below this average similarity over the top 3 hits, nothing in the database is
+# even topically related. Measured separation: real material queries score
+# 0.28-0.48, off-topic questions (maths, trivia, translation) score 0.05-0.11.
+OFF_TOPIC_RELEVANCE = 0.18
+
+_overview_cache = None
+
+
+def system_overview() -> str:
+    """Describe the tool using the live registry, not a hardcoded blurb.
+
+    Answers "what do you have?" with what is actually in the database, so it
+    stays correct as materials are added - and needs no API call, which means it
+    still works when the LLM quota is exhausted.
+    """
+    global _overview_cache
+    if _overview_cache is not None:
+        return _overview_cache
+    try:
+        import db
+        conn = db.connect()
+        rows = db.fetch_materials(conn)
+        stress_tables = conn.execute(
+            "SELECT COUNT(DISTINCT stress_table_id) FROM allowable_stress").fetchone()[0]
+        conn.close()
+    except Exception:
+        _overview_cache = ("I'm a material selection assistant.\n\n" + EXAMPLES_BLOCK)
+        return _overview_cache
+
+    families = {"Metals": [], "Plastics": [], "Ceramics": [], "Composites": []}
+    for r in rows:
+        cls = str(r.get("material_class", ""))
+        if cls.startswith("plastic_"):
+            families["Plastics"].append(r)
+        elif cls.startswith("ceramic_"):
+            families["Ceramics"].append(r)
+        elif cls.startswith("composite_"):
+            families["Composites"].append(r)
+        else:
+            families["Metals"].append(r)
+
+    lines = [
+        f"I'm a material selection assistant. I recommend engineering materials from a "
+        f"curated database of **{len(rows)} materials** across "
+        f"{len({r['material_class'] for r in rows})} classes - every value is from a "
+        f"cited source, so I never invent numbers.\n",
+        "**What's in the database**",
+    ]
+    for fam, items in families.items():
+        if not items:
+            continue
+        names = sorted({str(i["material_class"]).replace("_", " ") for i in items})
+        lines.append(f"- **{fam} ({len(items)})** - {', '.join(names)}")
+
+    lines.append(
+        f"\nEach material carries yield and tensile strength, density, stiffness, "
+        f"temperature limits, corrosion or chemical-resistance ratings, weldability, "
+        f"cost and typical uses. I also hold allowable-stress-vs-temperature tables "
+        f"(ASME BPVC) for {stress_tables} materials."
+    )
+    lines.append(
+        "\n**Not included:** rubber and elastomers, wood, concrete, foams, spring "
+        "tempers, and 3D-printing filament grades. If you ask for those I'll tell you "
+        "rather than suggest a poor substitute.\n"
+    )
+    lines.append(EXAMPLES_BLOCK)
+    _overview_cache = "\n".join(lines)
+    return _overview_cache
+
+
+def off_topic_reply(reason: str = "") -> str:
+    """Decline a non-materials question, saying WHY and what this tool is for."""
+    lead = reason.strip() if reason else (
+        "That isn't a materials question, so I can't help with it")
+    if not lead.endswith((".", "!", "?")):
+        lead += "."
+    return (f"{lead} I'm a material selection tool - I only recommend engineering "
+            f"materials from a verified property database, so anything outside that "
+            f"(maths, coding, general knowledge) is out of scope for me.\n\n"
+            + EXAMPLES_BLOCK)
 
 
 def _normalise(text):
     """Lowercase, drop punctuation and emoji, collapse whitespace."""
-    cleaned = "".join(ch if (ch.isalnum() or ch.isspace()) else " "
+    cleaned = "".join(ch if (ch.isalnum() or ch.isspace() or ch == "'") else " "
                       for ch in (text or "").lower())
     return " ".join(cleaned.split())
 
 
-def small_talk_reply(user_query):
-    """A canned reply when the WHOLE message is small talk, else None.
+def classify_local(user_query):
+    """Intent from the message alone - no API call, so it works when quota is out.
 
-    Deliberately an exact match on the full normalised message: a keyword scan
-    would hijack real queries that merely open with a greeting.
+    Returns "greeting" | "thanks" | "farewell" | "ack" | "about_system" | None.
+    None means "might be a real material question" and the pipeline runs.
     """
     t = _normalise(user_query)
     if not t:
-        return SMALL_TALK_REPLIES["greeting"]
+        return "greeting"
     for group, kind in ((GREETINGS, "greeting"), (THANKS, "thanks"),
-                        (FAREWELLS, "farewell"), (ACKS, "ack"),
-                        (CAPABILITY, "capability")):
+                        (FAREWELLS, "farewell"), (ACKS, "ack")):
         if t in group:
-            return SMALL_TALK_REPLIES[kind]
+            return kind
+    for pattern in ABOUT_SYSTEM_PATTERNS:
+        if re.match(pattern, t):
+            return "about_system"
     return None
+
+
+def small_talk_reply(user_query):
+    """The canned answer for a non-material message, or None to run the pipeline."""
+    kind = classify_local(user_query)
+    if kind is None:
+        return None
+    if kind == "about_system":
+        return system_overview()
+    if kind in SMALL_TALK_REPLIES:
+        return SMALL_TALK_REPLIES[kind]
+    lead = "Hello. " if kind == "greeting" else "Ready when you are. "
+    return lead + system_overview()
 
 
 # -----------------------------------------------------------------
@@ -414,6 +581,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
     except Exception as e:
         print(f"  understand_query failed: {e}")
     
+    llm_unavailable = understood is None
     if not understood:
         understood = {
             "semantic_query": search_query,
@@ -426,10 +594,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
     # The word list catches the common cases; understand_query flags anything
     # else that is not a material question ("what is the weather in Paris").
     if str(understood.get("intent", "material_query")).lower() == "off_topic":
-        result["chat_reply"] = (
-            "That one is outside what I can help with - I only recommend "
-            "engineering materials.\n\n" + INTRO
-        )
+        result["chat_reply"] = off_topic_reply(understood.get("off_topic_reason", ""))
         result["summary"] = result["chat_reply"]
         result["understood"] = understood
         return result
@@ -456,6 +621,19 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
     if not pool:
         result["error"] = "No materials in the database match this query."
         return result
+    # Safety net: when no model was reachable, nothing has judged whether this is
+    # even a materials question. Semantic similarity is the only signal left, and
+    # it separates cleanly at this range, so use it rather than answering a maths
+    # question with material cards.
+    if llm_unavailable and pool:
+        top3 = [m.get("relevance_score", 0.0) for m in pool[:3]]
+        if sum(top3) / len(top3) < OFF_TOPIC_RELEVANCE:
+            result["chat_reply"] = off_topic_reply(
+                "That doesn't look like a materials question, and I can't check it "
+                "properly right now because the AI service is unavailable")
+            result["summary"] = result["chat_reply"]
+            return result
+
     pool_by_id = {m["material_id"]: m for m in pool}
 
     # Step 3: Ask the LLM to SELECT and RANK the best materials from the pool.
@@ -466,6 +644,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
         semantic_query=semantic_query,
         max_select=top_k,
         materials_block=materials_block,
+        coverage_note=coverage_note(),
         stress_block="",
     )
 
