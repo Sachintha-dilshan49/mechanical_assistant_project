@@ -32,11 +32,15 @@ load_dotenv()
 # ids your key can actually reach.
 # -----------------------------------------------------------------
 GROQ_MODELS = {
-    "smart": [os.getenv("GROQ_MODEL_SMART", "llama-3.3-70b-versatile"),
-              "openai/gpt-oss-120b",
-              "llama-3.1-8b-instant"],
-    "fast":  [os.getenv("GROQ_MODEL_FAST", "llama-3.1-8b-instant"),
-              "llama-3.3-70b-versatile"],
+    # gpt-oss-120b is the strongest reasoner this account can reach; the 20b is
+    # the quick one for extraction work. Verified against the live model list
+    # with check_llm.py - Groq retires ids, so re-run it if answers go empty.
+    "smart": [os.getenv("GROQ_MODEL_SMART", "openai/gpt-oss-120b"),
+              "qwen/qwen3.6-27b",
+              "openai/gpt-oss-20b"],
+    "fast":  [os.getenv("GROQ_MODEL_FAST", "openai/gpt-oss-20b"),
+              "qwen/qwen3.6-27b",
+              "openai/gpt-oss-120b"],
 }
 
 GEMINI_MODELS = {
@@ -101,10 +105,14 @@ def available_providers():
 # message text instead. That keeps this working across SDK versions.
 # =================================================================
 def _classify(exc):
-    """One of: 'quota', 'transient', 'missing_model', 'fatal'."""
+    """One of: 'auth', 'quota', 'transient', 'missing_model', 'fatal'."""
     text = str(exc).lower()
     status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
 
+    # A bad or expired key fails identically on every model, so treat it like a
+    # dead provider rather than retrying the whole model list against it.
+    if status in (401, 403) or "invalid api key" in text or "unauthorized" in text             or "api key not valid" in text or "permission denied" in text:
+        return "auth"
     if status == 429 or "429" in text or "rate limit" in text \
             or "resource_exhausted" in text or "quota" in text \
             or "insufficient_quota" in text or "tokens per day" in text:
@@ -123,9 +131,9 @@ def _on_cooldown(provider):
     return time.time() < _cooldown_until.get(provider, 0)
 
 
-def _start_cooldown(provider):
+def _start_cooldown(provider, reason="quota exhausted"):
     _cooldown_until[provider] = time.time() + QUOTA_COOLDOWN_S
-    print(f"  [llm] {provider} quota exhausted - pausing it for "
+    print(f"  [llm] {provider} {reason} - pausing it for "
           f"{QUOTA_COOLDOWN_S // 60} min")
 
 
@@ -204,6 +212,9 @@ def generate(prompt, task="smart", json_output=False):
                 except Exception as exc:
                     last_error = exc
                     kind = _classify(exc)
+                    if kind == "auth":
+                        _start_cooldown(provider, "rejected the API key")
+                        break                      # whole provider is out
                     if kind == "quota":
                         _start_cooldown(provider)
                         break                      # whole provider is out
