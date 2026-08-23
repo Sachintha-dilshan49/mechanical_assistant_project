@@ -1,15 +1,10 @@
 # understand_query.py
-# Takes a plain-English engineering query and extracts structured filters using Gemini
+# Takes a plain-English engineering query and extracts structured filters.
+# The model behind it is chosen by llm.py (Groq first, Gemini as fallback).
 
-import os
 import json
-from dotenv import load_dotenv
-from google import genai
 
-# Load API key
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
+import llm
 
 # -----------------------------------------------------------------
 # THE PROMPT — this is the "brain" instruction
@@ -314,59 +309,22 @@ Now process the user's query below. Output ONLY the JSON, no other text, no mark
 # -----------------------------------------------------------------
 def understand_query(user_query: str) -> dict:
     """
-    Calls Gemini to translate plain English into a structured filter dict.
+    Calls an LLM to translate plain English into a structured filter dict.
     Returns a dict with semantic_query, filters, extracted_constraints, reasoning.
     """
     full_prompt = SYSTEM_PROMPT + f"\n\nUser query: {user_query}\n\nOutput:"
-    
-   # Retry logic for transient Gemini errors
-    import time
-    max_retries = 3
-    response = None
-    for attempt in range(max_retries):
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash-lite",
-                contents=full_prompt
-            )
-            break  # success
-        except Exception as e:
-            error_str = str(e)
-            low = error_str.lower()
-            if "429" in error_str or "resource_exhausted" in low or "quota" in low:
-                # Quota exhausted: retrying won't help and just stalls the UI.
-                # Fail fast so the pipeline degrades to semantic-only search.
-                print("      Gemini API quota exhausted (429) - failing fast.")
-                return None
-            if "503" in error_str or "unavailable" in low:
-                wait = 5 * (attempt + 1)
-                print(f"      Gemini busy. Retrying in {wait}s...")
-                time.sleep(wait)
-            else:
-                raise
 
-    if response is None:
-        print("ERROR: Gemini unavailable after retries")
+    # Provider failover (Groq -> Gemini), retries and quota handling all live in
+    # llm.generate; this function only has to deal with the JSON it returns.
+    text, _warning = llm.generate(full_prompt, task="fast", json_output=True)
+    if not text:
+        print("ERROR: no LLM available for query understanding")
         return None
 
-    # response.text is None when the model returns no text part
-    # (safety block, MAX_TOKENS, or a non-STOP finish reason).
-    if response.text is None:
-        print("ERROR: Gemini returned no text (possibly blocked or truncated)")
-        return None
-
-    # Clean up the response...
-    text = response.text.strip()
-    if text.startswith("```"):
-        # Remove markdown fences
-        lines = text.split("\n")
-        text = "\n".join(line for line in lines if not line.startswith("```"))
-    
     try:
-        result = json.loads(text)
-        return result
-    except json.JSONDecodeError as e:
-        print(f"ERROR: Gemini returned invalid JSON:\n{text}")
+        return json.loads(llm.strip_json_fences(text))
+    except json.JSONDecodeError:
+        print(f"ERROR: model returned invalid JSON:\n{text}")
         return None
 
 

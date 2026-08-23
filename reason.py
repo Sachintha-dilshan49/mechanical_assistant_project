@@ -1,22 +1,12 @@
 # reason.py
-# End-to-end RAG pipeline with graceful fallback when Gemini is unavailable.
+# End-to-end RAG pipeline with graceful fallback when the LLM is unavailable.
 # Returns structured data for the UI to render as cards.
 
-import os
 import json
-import time
-from dotenv import load_dotenv
-from google import genai
 
+import llm
 from understand_query import understand_query
 from retrieve import find_candidates, get_allowable_stress
-
-# -----------------------------------------------------------------
-# SETUP
-# -----------------------------------------------------------------
-load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
 
 # -----------------------------------------------------------------
 # REASONING PROMPT (LLM only writes summary + per-material reasoning)
@@ -98,44 +88,13 @@ def format_material_for_prompt(m: dict) -> str:
 
 
 # -----------------------------------------------------------------
-# THREE-LAYER FALLBACK FOR GEMINI
+# REASONING CALL
+# Model choice, provider failover (Groq -> Gemini), transient retries and quota
+# cooldowns all live in llm.generate.
 # -----------------------------------------------------------------
-def call_gemini_with_fallback(prompt: str):
-    """
-    Try gemini-2.5-flash first, fall back to gemini-2.5-flash-lite if it fails.
-    Returns (text, warning_message). text is None if all attempts failed.
-    """
-    models_to_try = [
-        ("gemini-2.5-flash", None),
-        ("gemini-2.5-flash-lite", "Used the lite model (main model busy) - quality may be slightly lower."),
-    ]
-    
-    for model_name, fallback_note in models_to_try:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt
-                )
-                return response.text, fallback_note
-            except Exception as e:
-                error_str = str(e)
-                low = error_str.lower()
-                if "429" in error_str or "resource_exhausted" in low or "quota" in low:
-                    # Quota exhausted / rate-capped: retrying won't help (and the lite
-                    # model shares the same quota), so fail fast instead of stalling.
-                    print(f"  {model_name}: API quota exhausted (429) - failing fast.")
-                    return None, ("AI reasoning unavailable - the Gemini API quota is "
-                                  "exhausted. Showing top database matches only.")
-                if "503" in error_str or "unavailable" in low or "overloaded" in low:
-                    wait = 3 * (attempt + 1)
-                    print(f"  {model_name} busy (attempt {attempt + 1}/2). Waiting {wait}s...")
-                    time.sleep(wait)
-                else:
-                    raise
-        print(f"  {model_name} unavailable. Trying next model...")
-
-    return None, "AI summary unavailable - Gemini is overloaded. Showing database results only."
+def call_llm_with_fallback(prompt: str):
+    """Returns (text, warning). text is None when every provider failed."""
+    return llm.generate(prompt, task="smart", json_output=True)
 
 
 def _as_num(val):
@@ -253,8 +212,8 @@ def contextualize_query(user_query: str, history: list) -> str:
 
     prompt = CONTEXTUALIZE_PROMPT.format(history_block="\n".join(lines), user_query=user_query)
     try:
-        resp = client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
-        text = (resp.text or "").strip().strip('"').strip()
+        raw, _warning = llm.generate(prompt, task="fast")
+        text = (raw or "").strip().strip('"').strip()
         rewritten = text.splitlines()[0].strip() if text else ""
         return rewritten or user_query
     except Exception as e:
@@ -426,10 +385,10 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
     )
 
     try:
-        text, fallback_note = call_gemini_with_fallback(final_prompt)
+        text, fallback_note = call_llm_with_fallback(final_prompt)
     except Exception as e:
         # Non-transient Gemini error — never crash the pipeline; fall back below.
-        print(f"  Gemini reasoning failed: {e}")
+        print(f"  LLM reasoning failed: {e}")
         text, fallback_note = None, "AI selection unavailable - reasoning service errored. Showing top database matches."
 
     selected = []
