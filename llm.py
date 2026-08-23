@@ -15,7 +15,9 @@ Configure in .env:
     GEMINI_API_KEY=...        # optional; without it Groq is used alone
     GROQ_MODEL_SMART=...      # optional overrides if a model id is retired
     GROQ_MODEL_FAST=...
-    LLM_PRIMARY=groq|gemini   # optional; defaults to groq
+    LLM_PRIMARY=groq|gemini        # optional; forces ONE provider for both tasks
+    LLM_PRIMARY_FAST=gemini|groq   # optional; default gemini (fast + separate quota)
+    LLM_PRIMARY_SMART=groq|gemini  # optional; default groq (larger token allowance)
 """
 
 import os
@@ -91,10 +93,23 @@ def _gemini_client():
     return _clients["gemini"]
 
 
-def available_providers():
-    """Provider names that have a usable key, in failover order."""
-    primary = (os.getenv("LLM_PRIMARY") or "groq").strip().lower()
-    order = ["groq", "gemini"] if primary != "gemini" else ["gemini", "groq"]
+# Which provider leads for each task. The two tasks go to DIFFERENT providers on
+# purpose: rate limits are per-model per-provider, so splitting them doubles the
+# effective throughput instead of draining one token bucket twice per query.
+# Measured: query understanding is ~2.7k tokens and gemini-2.5-flash-lite answers
+# it in ~2s, while the bigger reasoning prompt is better served by Groq's larger
+# free allowance. LLM_PRIMARY overrides both if you want one provider only.
+TASK_PRIMARY = {
+    "fast":  (os.getenv("LLM_PRIMARY_FAST") or "gemini").strip().lower(),
+    "smart": (os.getenv("LLM_PRIMARY_SMART") or "groq").strip().lower(),
+}
+
+
+def available_providers(task="smart"):
+    """Provider names that have a usable key, in failover order for this task."""
+    forced = (os.getenv("LLM_PRIMARY") or "").strip().lower()
+    primary = forced or TASK_PRIMARY.get(task, "groq")
+    order = ["gemini", "groq"] if primary == "gemini" else ["groq", "gemini"]
     return [p for p in order
             if (_groq_client() if p == "groq" else _gemini_client()) is not None]
 
@@ -145,6 +160,10 @@ def _call_groq(model, prompt, json_output):
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
+        # gpt-oss models spend completion tokens thinking before they emit the
+        # answer; too small a cap truncates mid-JSON and the request 400s with
+        # "max completion tokens reached before generating a valid document".
+        "max_completion_tokens": 4096,
     }
     if json_output:
         # Guarantees syntactically valid JSON, which is stronger than asking for
@@ -162,7 +181,9 @@ def _call_groq(model, prompt, json_output):
 
 
 def _call_gemini(model, prompt, json_output):
-    config = {"response_mime_type": "application/json"} if json_output else None
+    config = {"max_output_tokens": 4096}
+    if json_output:
+        config["response_mime_type"] = "application/json"
     resp = _gemini_client().models.generate_content(
         model=model, contents=prompt, config=config
     )
@@ -185,7 +206,7 @@ def generate(prompt, task="smart", json_output=False):
     is a short note for the UI when the answer did not come from the primary
     provider, else None.
     """
-    providers = available_providers()
+    providers = available_providers(task)
     if not providers:
         return None, ("No LLM API key configured - set GROQ_API_KEY or "
                       "GEMINI_API_KEY in your .env file.")

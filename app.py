@@ -607,10 +607,15 @@ else:
                 pending_q = None
 
         with st.chat_message("assistant", avatar="🔧"):
-            with st.spinner("Searching database and reasoning…"):
+            # Named stages instead of one opaque spinner: the pipeline makes two
+            # LLM calls and a vector search, and saying which one is running makes
+            # the wait feel like progress rather than a hang.
+            with st.status("Working...", expanded=False) as status:
                 result = reason_about_query(
-                    conv["messages"][-1]["content"], top_k=top_k, history=prior
+                    conv["messages"][-1]["content"], top_k=top_k, history=prior,
+                    on_step=lambda label: status.update(label=label),
                 )
+                status.update(label="Done", state="complete")
         conv["messages"].append({
             "role": "assistant", "result": result,
             "time": datetime.now().strftime("%H:%M"),

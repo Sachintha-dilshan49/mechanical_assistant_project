@@ -30,8 +30,8 @@ CRITICAL RULES:
 3. SELECT the best {max_select} or fewer materials, ranked best-first, and ignore poor fits. If NONE
    of the pool is well suited, still pick the closest 1-2, say clearly they are compromises, and
    describe what property profile would actually suit the job.
-4. NEVER invent a value for a field shown as NOT_FOUND; if a property does not apply to the
-   material's class, treat it as "not applicable".
+4. NEVER invent a value. Each block lists ONLY the properties that apply to that material's
+   family - a field that is absent is "not applicable" or unknown, never zero.
 
 INTERPRET PROPERTIES BY FAMILY (material_class):
 - METALS: corrosion ratings, weldability, machinability.
@@ -59,32 +59,106 @@ The "selected" list must be ranked best-first and contain ONLY material_id value
 pool above. Order matters — the first entry is your #1 recommendation."""
 
 
-def format_material_for_prompt(m: dict) -> str:
-    """Convert a retrieved material dict to a text block for the LLM.
+def _num(m, key):
+    """Compact string for a numeric field, or None when it does not apply."""
+    v = m.get(key)
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "" or s.upper() == "NOT_FOUND":
+        return None
+    try:
+        f = float(s)
+        return str(int(f)) if f.is_integer() else f"{f:g}"
+    except ValueError:
+        return s
 
-    Includes both metal and non-metal property lines; fields that don't apply to
-    this material show as NOT_FOUND so the LLM knows not to cite them. The prompt
-    rules tell it which fields to use for each material family."""
-    return (
-        f"--- {m.get('common_name')} (id: {m.get('material_id')}) ---\n"
-        f"  material_class: {m.get('material_class')}\n"
-        f"  yield_strength_MPa: {m.get('yield_strength_MPa')}\n"
-        f"  ultimate_tensile_strength_MPa: {m.get('ultimate_tensile_strength_MPa')}  (flexural strength for ceramics)\n"
-        f"  hardness_HB: {m.get('hardness_HB')}   hardness_shore_d: {m.get('hardness_shore_d')}\n"
-        f"  density_kg_m3: {m.get('density_kg_m3')}   elastic_modulus_GPa: {m.get('elastic_modulus_GPa')}\n"
-        f"  max_service_temp_C: {m.get('max_service_temp_C')}   max_continuous_use_temp_C: {m.get('max_continuous_use_temp_C')}\n"
-        f"  corrosion_seawater: {m.get('corrosion_seawater')}/5  (metals)\n"
-        f"  chemical_resistance solvents/acids/alkalis/fuels: "
-        f"{m.get('chemical_resistance_solvents')}/{m.get('chemical_resistance_acids')}/"
-        f"{m.get('chemical_resistance_alkalis')}/{m.get('chemical_resistance_fuels')}  (non-metals, 1-5)\n"
-        f"  weldability: {m.get('weldability')}/5   joining_method: {m.get('joining_method')}\n"
-        f"  machinability_index: {m.get('machinability_index')}   "
-        f"cost_class: {m.get('cost_class')}/5   approx_cost_usd_per_kg: {m.get('approx_cost_usd_per_kg')}\n"
-        f"  flammability(UL94): {m.get('flammability')}   uv_resistance: {m.get('uv_resistance')}/5   "
-        f"water_absorption_percent: {m.get('water_absorption_percent')}\n"
-        f"  key_warnings: {m.get('key_warnings', '')}\n"
-        f"  sources: {m.get('sources', '')}\n"
-    )
+
+def _txt(m, key, limit):
+    """Trimmed text field, or None. Long prose is truncated to save tokens."""
+    v = m.get(key)
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "" or s.upper() == "NOT_FOUND":
+        return None
+    return (s[:limit].rstrip() + "...") if len(s) > limit else s
+
+
+def _join(pairs):
+    """'a=1 b=2', skipping anything missing."""
+    return " ".join(f"{k}={v}" for k, v in pairs if v)
+
+
+def format_material_for_prompt(m: dict) -> str:
+    """One candidate material as a compact text block for the LLM.
+
+    Only the fields that mean something for this material's family are emitted:
+    sending corrosion ratings for a plastic or Shore D for a steel is noise that
+    costs tokens. That matters directly - the free-tier budget is 8k tokens per
+    minute per model, and a pool of 18 verbose blocks alone used to exceed it,
+    so every query got throttled and took ~50s.
+
+    Missing values are simply omitted; the LLM is told that an absent field means
+    "not applicable", which replaces the old NOT_FOUND spam.
+    """
+    cls = str(m.get("material_class", ""))
+    is_plastic = cls.startswith("plastic_")
+    is_ceramic = cls.startswith("ceramic_")
+    is_composite = cls.startswith("composite_")
+    is_metal = not (is_plastic or is_ceramic or is_composite)
+
+    lines = [f"--- {m.get('common_name')} [{m.get('material_id')}] {cls}"]
+
+    # Mechanical + physical: shared by every family.
+    mech = [("ys_MPa", _num(m, "yield_strength_MPa")),
+            ("uts_MPa", _num(m, "ultimate_tensile_strength_MPa")),
+            ("elong%", _num(m, "elongation_percent")),
+            ("E_GPa", _num(m, "elastic_modulus_GPa")),
+            ("rho", _num(m, "density_kg_m3"))]
+    if is_ceramic:
+        # No yield point; UTS is the flexural strength.
+        mech = [("flexural_MPa", _num(m, "ultimate_tensile_strength_MPa"))] + mech[2:]
+    lines.append("  " + _join(mech))
+
+    # Temperature: plastics are limited by continuous-use temp, others by service temp.
+    temps = [("Tmax_C", _num(m, "max_service_temp_C")),
+             ("Tmin_C", _num(m, "min_service_temp_C"))]
+    if is_plastic:
+        temps.insert(0, ("Tcont_C", _num(m, "max_continuous_use_temp_C")))
+    lines.append("  " + _join(temps))
+
+    if is_metal:
+        corr = "/".join(_num(m, k) or "-" for k in
+                        ("corrosion_seawater", "corrosion_acidic", "corrosion_alkaline",
+                         "corrosion_atmospheric", "corrosion_high_temp"))
+        lines.append(f"  corrosion sea/acid/alk/atmos/hot(1-5)={corr}  " +
+                     _join([("HB", _num(m, "hardness_HB")),
+                            ("weld1_5", _num(m, "weldability")),
+                            ("machinability", _num(m, "machinability_index"))]))
+    else:
+        chem = "/".join(_num(m, k) or "-" for k in
+                        ("chemical_resistance_solvents", "chemical_resistance_acids",
+                         "chemical_resistance_alkalis", "chemical_resistance_fuels"))
+        extras = [("shoreD", _num(m, "hardness_shore_d")),
+                  ("UL94", _txt(m, "flammability", 8)),
+                  ("uv1_5", _num(m, "uv_resistance")),
+                  ("water_abs%", _num(m, "water_absorption_percent"))]
+        lines.append(f"  chem_resist solv/acid/alk/fuel(1-5)={chem}  " + _join(extras))
+
+    lines.append("  " + _join([("cost1_5", _num(m, "cost_class")),
+                               ("usd_per_kg", _txt(m, "approx_cost_usd_per_kg", 12)),
+                               ("fatigue1_5", _num(m, "fatigue_rating")),
+                               ("join", _txt(m, "joining_method", 40))]))
+
+    apps = _txt(m, "typical_applications", 90)
+    if apps:
+        lines.append(f"  uses: {apps}")
+    warn = _txt(m, "key_warnings", 110)
+    if warn:
+        lines.append(f"  warn: {warn}")
+
+    return "\n".join(l for l in lines if l.strip())
 
 
 # -----------------------------------------------------------------
@@ -290,13 +364,19 @@ def small_talk_reply(user_query):
 # -----------------------------------------------------------------
 # MAIN PIPELINE
 # -----------------------------------------------------------------
-def reason_about_query(user_query: str, top_k: int = 3, history: list = None) -> dict:
+def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
+                       on_step=None) -> dict:
     """
     Full RAG pipeline with graceful degradation.
     `history` (optional) is a list of prior turns [{"query": str, "materials": [names]}];
     when present, a follow-up like "make it cheaper" is resolved against it first.
+    `on_step` (optional) is called with a short progress label as each stage
+    starts, so the UI can say what it is doing instead of showing one long spinner.
     Always returns materials if any matched; LLM summary is best-effort.
     """
+    def step(label):
+        if on_step:
+            on_step(label)
     result = {
         "query": user_query,
         "resolved_query": None,
@@ -320,11 +400,14 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
 
     # Step 0: resolve a follow-up against the conversation so "make it cheaper" /
     # "what about saltwater" inherit the earlier subject. No-op for a first message.
+    if history:
+        step("Reading the conversation so far...")
     search_query = contextualize_query(user_query, history) if history else user_query
     if search_query != user_query:
         result["resolved_query"] = search_query
 
     # Step 1: Understand query (with fallback)
+    step("Understanding your requirements...")
     understood = None
     try:
         understood = understand_query(search_query)
@@ -363,6 +446,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
     # the reasoning LLM makes the actual choice, so a too-tight filter can no longer
     # silently delete the right answer before the model ever sees it.
     POOL_SIZE = 18
+    step("Searching the materials database...")
     pool = find_candidates(
         query_text=semantic_query,
         filters=filters if filters else None,
@@ -375,6 +459,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
     pool_by_id = {m["material_id"]: m for m in pool}
 
     # Step 3: Ask the LLM to SELECT and RANK the best materials from the pool.
+    step(f"Comparing {len(pool)} candidate materials...")
     materials_block = "\n\n".join(format_material_for_prompt(m) for m in pool)
     final_prompt = REASONING_PROMPT_TEMPLATE.format(
         user_query=search_query,
@@ -430,6 +515,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None) ->
     # Step 4: Allowable-stress lookups for the SELECTED materials (database only).
     temp_C = constraints.get("temperature_C")
     if temp_C is not None:
+        step("Looking up allowable stress at temperature...")
         for mat in selected:
             stress_table_id = mat.get("stress_table_id", "")
             if stress_table_id:

@@ -96,204 +96,74 @@ filter when the user gives a real number or a hard physical requirement ("must f
 reasoning step weigh it; to steer the material type, prefer a material_class / material_family
 filter over an arbitrary numeric cutoff.
 
-OUTPUT FORMAT (must be valid JSON, no other text):
+OUTPUT FORMAT (valid JSON only, no other text):
 {
     "intent": "<material_query, or off_topic for greetings, small talk, or anything not about choosing a material>",
     "semantic_query": "<short rephrasing of the design intent, 5-15 words>",
-    "filters": { <metadata filters as a dict> },
-    "extracted_constraints": {
-        "temperature_C": <number or null>,
-        "environment": "<marine, acidic, alkaline, atmospheric, high_temp, or null>",
-        "priority": "<strength, lightweight, cost, weldability, machinability, corrosion, chemical_resistance, or null>",
-        "stress_required_MPa": <number or null>,
-        "chemical_environment": "<solvents, acids, alkalis, fuels, or null>",
-        "joining_required": "<welding, adhesive, mechanical_fastening, or null>",
-        "uv_exposure": <true or false>,
-        "flammability_required": "<V-0, V-2, HB, or null>",
-        "material_family": "<metals, plastics, ceramics, composites, or any>"
-    },
+    "filters": { <metadata filters> },
+    "extracted_constraints": { <only the ones that apply - OMIT any that would be null> },
     "reasoning": "<one sentence: how you interpreted the query>"
 }
 
-EXAMPLES:
+extracted_constraints may contain any of:
+  temperature_C (number), environment (marine|acidic|alkaline|atmospheric|high_temp),
+  priority (strength|lightweight|cost|weldability|machinability|corrosion|chemical_resistance),
+  stress_required_MPa (number), chemical_environment (solvents|acids|alkalis|fuels),
+  joining_required (welding|adhesive|mechanical_fastening), uv_exposure (true),
+  flammability_required (V-0|V-2|HB), material_family (metals|plastics|ceramics|composites|any)
+
+EXAMPLES (note how null constraints are left out entirely):
 
 Query: "I need a lightweight material for marine use"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "lightweight corrosion-resistant material",
-    "filters": {"corrosion_seawater": {"$gte": 4}},
-    "extracted_constraints": {
-        "temperature_C": null,
-        "environment": "marine",
-        "priority": "lightweight",
-        "stress_required_MPa": null,
-        "chemical_environment": null,
-        "joining_required": null,
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "any"
-    },
-    "reasoning": "Marine environment requires good seawater corrosion resistance; lightweight is a sorting priority for the LLM reasoning step."
-}
+{"intent":"material_query","semantic_query":"lightweight corrosion-resistant material",
+ "filters":{"corrosion_seawater":{"$gte":4}},
+ "extracted_constraints":{"environment":"marine","priority":"lightweight","material_family":"any"},
+ "reasoning":"Marine service needs seawater corrosion resistance; lightweight is a ranking priority, not a hard cutoff."}
 
 Query: "Material for a shaft that must handle 300 MPa stress at 200 degrees C"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "shaft material with high strength at elevated temperature",
-    "filters": {
-        "yield_strength_MPa": {"$gte": 300},
-        "max_service_temp_C": {"$gte": 200}
-    },
-    "extracted_constraints": {
-        "temperature_C": 200,
-        "environment": null,
-        "priority": "strength",
-        "stress_required_MPa": 300,
-        "chemical_environment": null,
-        "joining_required": null,
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "any"
-    },
-    "reasoning": "Shaft application implies fatigue and yield matter; 300 MPa is the strength constraint, 200 C is the service temperature."
-}
+{"intent":"material_query","semantic_query":"shaft material with high strength at elevated temperature",
+ "filters":{"yield_strength_MPa":{"$gte":300},"max_service_temp_C":{"$gte":200}},
+ "extracted_constraints":{"temperature_C":200,"priority":"strength","stress_required_MPa":300,"material_family":"any"},
+ "reasoning":"Real numbers are given, so both become hard filters."}
 
 Query: "A low-friction plastic for a gear that resists oils and fuels"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "wear-resistant engineering plastic for a gear, fuel resistant",
-    "filters": {
-        "material_class": {"$in": ["plastic_thermoplastic", "plastic_thermoset"]},
-        "chemical_resistance_fuels": {"$gte": 4}
-    },
-    "extracted_constraints": {
-        "temperature_C": null,
-        "environment": null,
-        "priority": "chemical_resistance",
-        "stress_required_MPa": null,
-        "chemical_environment": "fuels",
-        "joining_required": null,
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "plastics"
-    },
-    "reasoning": "Gear in oils/fuels points to engineering thermoplastics with high fuel chemical resistance."
-}
+{"intent":"material_query","semantic_query":"wear-resistant engineering plastic for a gear, fuel resistant",
+ "filters":{"material_class":{"$in":["plastic_thermoplastic","plastic_thermoset"]},"chemical_resistance_fuels":{"$gte":4}},
+ "extracted_constraints":{"priority":"chemical_resistance","chemical_environment":"fuels","material_family":"plastics"},
+ "reasoning":"Gear in oils/fuels points to engineering thermoplastics with high fuel resistance."}
 
 Query: "A brittle electrical insulator that survives 1000 C"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "high-temperature electrically insulating ceramic",
-    "filters": {
-        "material_class": {"$in": ["ceramic_oxide", "ceramic_carbide", "ceramic_glass"]},
-        "max_service_temp_C": {"$gte": 1000}
-    },
-    "extracted_constraints": {
-        "temperature_C": 1000,
-        "environment": "high_temp",
-        "priority": "strength",
-        "stress_required_MPa": null,
-        "chemical_environment": null,
-        "joining_required": null,
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "ceramics"
-    },
-    "reasoning": "Electrical insulation plus 1000 C service points to oxide/technical ceramics, which are brittle by nature."
-}
+{"intent":"material_query","semantic_query":"high-temperature electrically insulating ceramic",
+ "filters":{"material_class":{"$in":["ceramic_oxide","ceramic_carbide","ceramic_glass"]},"max_service_temp_C":{"$gte":1000}},
+ "extracted_constraints":{"temperature_C":1000,"environment":"high_temp","material_family":"ceramics"},
+ "reasoning":"Electrical insulation plus 1000 C points to technical ceramics, brittle by nature."}
 
 Query: "Strongest, stiffest material for an aerospace panel I can bond with adhesive"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "high specific strength and stiffness composite for aerospace panel",
-    "filters": {
-        "material_class": {"$in": ["composite_cfrp", "composite_gfrp", "composite_kevlar"]}
-    },
-    "extracted_constraints": {
-        "temperature_C": null,
-        "environment": null,
-        "priority": "strength",
-        "stress_required_MPa": null,
-        "chemical_environment": null,
-        "joining_required": "adhesive",
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "composites"
-    },
-    "reasoning": "Aerospace panel with adhesive bonding and a strength/stiffness priority points to fibre-reinforced composites."
-}
+{"intent":"material_query","semantic_query":"high specific strength and stiffness composite for aerospace panel",
+ "filters":{"material_class":{"$in":["composite_cfrp","composite_gfrp","composite_kevlar"]}},
+ "extracted_constraints":{"priority":"strength","joining_required":"adhesive","material_family":"composites"},
+ "reasoning":"Adhesive bonding plus a strength/stiffness priority points to fibre-reinforced composites."}
 
 Query: "I want to make a toy boat, what material should I use?"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "lightweight low-cost waterproof plastic for a small toy boat hull",
-    "filters": {
-        "material_class": {"$in": ["plastic_thermoplastic", "plastic_thermoset"]},
-        "cost_class": {"$lte": 2}
-    },
-    "extracted_constraints": {
-        "temperature_C": null,
-        "environment": "marine",
-        "priority": "lightweight",
-        "stress_required_MPa": null,
-        "chemical_environment": null,
-        "joining_required": null,
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "plastics"
-    },
-    "reasoning": "A toy boat must float and resist water cheaply, so a light, low-cost, waterproof plastic is ideal; dense rusting metals like cast iron are the wrong choice."
-}
+{"intent":"material_query","semantic_query":"lightweight low-cost waterproof plastic for a small toy boat hull",
+ "filters":{"material_class":{"$in":["plastic_thermoplastic","plastic_thermoset"]},"cost_class":{"$lte":2}},
+ "extracted_constraints":{"environment":"marine","priority":"lightweight","material_family":"plastics"},
+ "reasoning":"A toy boat must float and resist water cheaply; dense rusting metals are wrong."}
 
 Query: "a hinge for my garden gate that won't rust outside"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "weather-resistant non-rusting metal for an outdoor gate hinge",
-    "filters": {
-        "corrosion_atmospheric": {"$gte": 4}
-    },
-    "extracted_constraints": {
-        "temperature_C": null,
-        "environment": "atmospheric",
-        "priority": "corrosion",
-        "stress_required_MPa": null,
-        "chemical_environment": null,
-        "joining_required": null,
-        "uv_exposure": true,
-        "flammability_required": null,
-        "material_family": "metals"
-    },
-    "reasoning": "A hinge needs metal strength but must not rust outdoors, so restrict to metals with good atmospheric corrosion resistance such as stainless or aluminum."
-}
+{"intent":"material_query","semantic_query":"weather-resistant non-rusting metal for an outdoor gate hinge",
+ "filters":{"corrosion_atmospheric":{"$gte":4}},
+ "extracted_constraints":{"environment":"atmospheric","priority":"corrosion","uv_exposure":true,"material_family":"metals"},
+ "reasoning":"Needs metal strength but must not rust outdoors: stainless or aluminum."}
 
 Query: "what is the perfect material for a car body?"
-Output:
-{
-    "intent": "material_query",
-    "semantic_query": "formable low-cost sheet metal for automotive body panels",
-    "filters": {
-        "material_class": {"$in": ["carbon_steel_low", "carbon_steel_medium", "aluminum_wrought"]}
-    },
-    "extracted_constraints": {
-        "temperature_C": null,
-        "environment": "atmospheric",
-        "priority": "lightweight",
-        "stress_required_MPa": null,
-        "chemical_environment": null,
-        "joining_required": "welding",
-        "uv_exposure": false,
-        "flammability_required": null,
-        "material_family": "metals"
-    },
-    "reasoning": "Car bodies are overwhelmingly formable low-carbon sheet steel or aluminum (good formability, weldability, crash energy absorption, low cost); composites appear only on specialty cars. Lightweight is a priority here, NOT a hard density cutoff that would wrongly exclude steel."
-}
+{"intent":"material_query","semantic_query":"formable low-cost sheet metal for automotive body panels",
+ "filters":{"material_class":{"$in":["carbon_steel_low","carbon_steel_medium","aluminum_wrought"]}},
+ "extracted_constraints":{"environment":"atmospheric","priority":"lightweight","joining_required":"welding","material_family":"metals"},
+ "reasoning":"Car bodies are formable low-carbon sheet steel or aluminum. Lightweight is a priority, NOT a density cutoff that would exclude steel."}
+
+Query: "hello"
+{"intent":"off_topic","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Greeting, not a material request."}
 
 INTENT:
 Set "intent" to "off_topic" when the message is not a request for a material -
