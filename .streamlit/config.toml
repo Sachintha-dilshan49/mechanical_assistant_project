@@ -1,0 +1,12 @@
+# Warm, low-contrast light theme. The custom CSS in app.py is written against
+# these exact values, so change both together or the chrome will not match.
+[theme]
+base = "light"
+primaryColor = "#C96442"
+backgroundColor = "#FAF9F5"
+secondaryBackgroundColor = "#F2F0EA"
+textColor = "#262624"
+font = "sans serif"
+
+[server]
+runOnSave = true

@@ -24,89 +24,202 @@ st.set_page_config(
 # =================================================================
 st.markdown("""
 <style>
-/* Calm, low-contrast design — muted neutrals, generous spacing, few accents. */
-.material-card {
-    background-color: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 14px;
-    padding: 1.5rem 1.7rem;
-    margin-bottom: 1.1rem;
+/* =================================================================
+   DESIGN TOKENS
+   One warm, low-contrast palette. Every colour below is referenced by
+   name, so the whole UI can be retuned from this block alone. Values
+   mirror .streamlit/config.toml - keep them in sync.
+   ================================================================= */
+:root {
+    --bg:            #FAF9F5;
+    --surface:       #FFFFFF;
+    --surface-sunk:  #F2F0EA;
+    --border:        #E4E1D9;
+    --border-strong: #D3CFC4;
+    --text:          #262624;
+    --text-muted:    #6E6B63;
+    --text-faint:    #938F85;
+    --accent:        #C96442;
+    --accent-wash:   rgba(201, 100, 66, 0.07);
+    --radius:        12px;
+    --radius-sm:     7px;
 }
+
+/* Base typography: generous line height, comfortable measure. */
+html, body, [class*="css"] {
+    font-feature-settings: "kern" 1, "liga" 1;
+    -webkit-font-smoothing: antialiased;
+}
+.stApp { background: var(--bg); }
+.block-container { padding-top: 2.2rem; max-width: 52rem; }
+
+/* Section label - small, tracked, quiet. Replaces the old bold headings. */
 .sec {
-    font-size: 1.02rem;
+    font-size: 0.7rem;
     font-weight: 600;
-    color: #c7ccd3;
-    letter-spacing: 0.01em;
-    margin: 1.4rem 0 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--text-faint);
+    margin: 2rem 0 0.7rem;
 }
+
+/* -----------------------------------------------------------------
+   MATERIAL CARD
+   Flat surface, hairline border, no drop shadow until hover. The old
+   card used translucent white on dark, which only worked on one theme.
+   ----------------------------------------------------------------- */
+.material-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.35rem 1.5rem 1.15rem;
+    margin-bottom: 0.9rem;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.material-card:hover {
+    border-color: var(--border-strong);
+    box-shadow: 0 1px 3px rgba(38, 38, 36, 0.05);
+}
+.mat-name {
+    font-size: 1.06rem;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.01em;
+}
+.mat-meta {
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-top: 0.15rem;
+}
+
+/* Rank chip - the #1 pick gets the accent, the rest stay quiet. */
 .rank-badge {
-    display: inline-block;
-    padding: 0.12rem 0.55rem;
-    border-radius: 8px;
-    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.3rem;
+    height: 1.3rem;
+    padding: 0 0.35rem;
+    border-radius: var(--radius-sm);
     font-size: 0.72rem;
-    letter-spacing: 0.02em;
-    margin-right: 0.5rem;
-    background-color: rgba(255, 255, 255, 0.07);
-    color: #aeb4bd;
-    vertical-align: middle;
+    font-weight: 600;
+    background: var(--surface-sunk);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    margin-right: 0.55rem;
 }
+.rank-badge.top {
+    background: var(--accent-wash);
+    color: var(--accent);
+    border-color: rgba(201, 100, 66, 0.25);
+}
+
+/* Property chips */
 .prop-pill {
     display: inline-block;
-    padding: 0.28rem 0.65rem;
-    margin: 0.2rem 0.3rem 0.2rem 0;
-    background-color: rgba(255, 255, 255, 0.045);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-    font-size: 0.8rem;
-    color: #c0c5cc;
+    padding: 0.24rem 0.55rem;
+    margin: 0.22rem 0.3rem 0.22rem 0;
+    background: var(--surface-sunk);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    white-space: nowrap;
 }
-/* Unified subtle note (stress lookups, reasoning) */
-.note {
-    background-color: rgba(255, 255, 255, 0.025);
-    border-left: 3px solid rgba(255, 255, 255, 0.16);
-    padding: 0.7rem 1rem;
-    border-radius: 4px;
-    margin-top: 0.7rem;
-    font-size: 0.9rem;
-    color: #c0c5cc;
-}
-.note-accent { border-left-color: #7f9ea6; }
-.warn {
-    background-color: rgba(205, 160, 95, 0.06);
-    border-left: 3px solid rgba(205, 160, 95, 0.55);
-    padding: 0.7rem 1rem;
-    border-radius: 4px;
-    margin-top: 0.7rem;
-    font-size: 0.88rem;
-    color: #c9b491;
-}
-/* Family safety banners — visible but not alarming */
-.banner {
-    padding: 0.6rem 0.9rem;
-    border-radius: 6px;
-    margin: 0.5rem 0;
-    font-size: 0.86rem;
-    font-weight: 500;
-}
-.banner-danger { background: rgba(190, 110, 110, 0.10); border-left: 3px solid #be6e6e; color: #d29a9a; }
-.banner-warn   { background: rgba(200, 150, 90, 0.10);  border-left: 3px solid #c8964a; color: #cbab82; }
-.muted { color: #8b9098; font-size: 0.8rem; }
+.prop-pill b { color: var(--text); font-weight: 600; }
 
-/* WhatsApp-style outgoing (user) message bubble — right aligned, green. */
-.wa-row { display: flex; margin: 0.35rem 0 0.15rem; }
+/* Callouts: reasoning, stress data, warnings, safety banners. */
+.note {
+    background: var(--surface-sunk);
+    border-left: 2px solid var(--border-strong);
+    padding: 0.75rem 0.95rem;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    margin-top: 0.75rem;
+    font-size: 0.88rem;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+.note-accent {
+    background: var(--accent-wash);
+    border-left-color: var(--accent);
+    color: var(--text);
+}
+.warn {
+    background: rgba(193, 138, 62, 0.08);
+    border-left: 2px solid #C18A3E;
+    padding: 0.75rem 0.95rem;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    margin-top: 0.7rem;
+    font-size: 0.86rem;
+    line-height: 1.6;
+    color: #7A5A24;
+}
+.banner {
+    padding: 0.6rem 0.85rem;
+    border-radius: var(--radius-sm);
+    margin: 0.7rem 0 0.2rem;
+    font-size: 0.84rem;
+    line-height: 1.5;
+}
+.banner-danger { background: rgba(184, 92, 76, 0.08);  border-left: 2px solid #B85C4C; color: #8A3F33; }
+.banner-warn   { background: rgba(193, 138, 62, 0.08); border-left: 2px solid #C18A3E; color: #7A5A24; }
+.muted { color: var(--text-faint); font-size: 0.75rem; }
+
+/* -----------------------------------------------------------------
+   CHAT
+   The user's turn is a quiet outlined block, not a coloured bubble.
+   The assistant's turn has no container at all, so the content itself
+   carries the page - the same reason chat UIs read as calm.
+   ----------------------------------------------------------------- */
+.wa-row { display: flex; margin: 1.4rem 0 0.2rem; }
 .wa-row.user { justify-content: flex-end; }
 .wa-bubble-user {
-    background-color: #005c4b;          /* WhatsApp dark-mode outgoing green */
-    color: #e9edef;
-    padding: 0.45rem 0.7rem;
-    border-radius: 12px 12px 3px 12px;  /* little tail on the bottom-right */
-    max-width: 78%;
-    font-size: 0.95rem;
-    line-height: 1.35;
-    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+    background: var(--surface-sunk);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.6rem 0.9rem;
+    border-radius: var(--radius);
+    max-width: 80%;
+    font-size: 0.94rem;
+    line-height: 1.55;
     overflow-wrap: anywhere;
 }
+
+/* Streamlit chrome: soften borders, match the palette. */
+[data-testid="stChatMessage"] {
+    background: transparent;
+    padding: 0.2rem 0 0;
+}
+[data-testid="stSidebar"] {
+    background: var(--surface-sunk);
+    border-right: 1px solid var(--border);
+}
+[data-testid="stSidebar"] .stButton button {
+    text-align: left;
+    justify-content: flex-start;
+    font-size: 0.85rem;
+    font-weight: 450;
+    border-radius: var(--radius-sm);
+}
+[data-testid="stMetricValue"] { font-size: 1.15rem; font-weight: 600; }
+[data-testid="stMetricLabel"] { font-size: 0.74rem; color: var(--text-faint); }
+[data-testid="stExpander"] {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+}
+[data-testid="stChatInput"] {
+    border-radius: var(--radius);
+    border-color: var(--border-strong);
+}
+/* Tertiary buttons are the per-message actions - keep them near-invisible
+   until hovered so they do not compete with the answer. */
+button[kind="tertiary"] {
+    color: var(--text-faint) !important;
+    font-size: 0.76rem !important;
+    padding: 0.1rem 0.4rem !important;
+}
+button[kind="tertiary"]:hover { color: var(--accent) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -155,16 +268,20 @@ def is_family(mat, prefix):
 
 
 def color_for_rating(value):
-    """Muted color for a 1-5 rating (desaturated, easy on the eyes)."""
+    """Colour for a 1-5 rating, tuned for the light background.
+
+    Deliberately desaturated: five saturated traffic-light bars per card
+    turns the page into noise when the numbers are the point.
+    """
     v = rint(value)
     if v is None:
-        return "#7c8088"
+        return "#B9B5AB"
     v = max(1, min(5, v))
-    return ["#b08080", "#b09280", "#b3ad80", "#9bb084", "#86ab8c"][v - 1]
+    return ["#BC6B57", "#C08A4E", "#AFA057", "#7F9A63", "#5E8C63"][v - 1]
 
 
 def rating_bar(value, max_value=5):
-    """A small muted progress bar for a 1-5 rating, or 'N/A'."""
+    """A slim bar for a 1-5 rating, or 'N/A'."""
     v = rint(value)
     if v is None:
         return '<span class="muted">N/A</span>'
@@ -172,15 +289,17 @@ def rating_bar(value, max_value=5):
     c = color_for_rating(v)
     return (
         '<div style="display:flex;align-items:center;gap:0.5rem;">'
-        '<div style="flex:1;height:6px;border-radius:3px;background:rgba(255,255,255,0.06);overflow:hidden;">'
-        f'<div style="width:{pct}%;height:100%;background:{c};border-radius:3px;"></div></div>'
-        f'<span class="muted" style="min-width:1.8rem;text-align:right;">{v}/5</span></div>'
+        '<div style="flex:1;height:5px;border-radius:3px;'
+        'background:var(--surface-sunk);border:1px solid var(--border);overflow:hidden;">'
+        f'<div style="width:{pct}%;height:100%;background:{c};"></div></div>'
+        f'<span class="muted" style="min-width:1.6rem;text-align:right;">{v}/5</span></div>'
     )
 
 
 def rank_badge(rank):
-    """A single muted rank chip — no gold/silver/bronze."""
-    return f'<span class="rank-badge">#{rank}</span>'
+    """Rank chip. Only the top pick is accented - everything else is quiet."""
+    cls = "rank-badge top" if rank == 1 else "rank-badge"
+    return f'<span class="{cls}">{rank}</span>'
 
 
 # =================================================================
@@ -201,9 +320,9 @@ if "editing_idx" not in st.session_state:
 # SIDEBAR
 # =================================================================
 with st.sidebar:
-    st.markdown("### 🔧 Material Assistant")
+    st.markdown("#### Material Assistant")
 
-    if st.button("✛  New chat", use_container_width=True):
+    if st.button("New chat", use_container_width=True, type="primary"):
         convs = st.session_state.conversations
         st.session_state.editing_idx = None
         # Reuse the current chat if it's already empty, instead of stacking blanks.
@@ -321,17 +440,24 @@ def render_result(result):
             col_a, col_b = st.columns([3, 1])
             with col_a:
                 st.markdown(
-                    f'{rank_badge(rank)} **{mat.get("common_name", "")}**',
+                    f'{rank_badge(rank)}<span class="mat-name">'
+                    f'{html.escape(str(mat.get("common_name", "")))}</span>'
+                    f'<div class="mat-meta">'
+                    f'{html.escape(str(mat.get("material_class", "")).replace("_", " ").title())}'
+                    f' &nbsp;·&nbsp; '
+                    f'{html.escape(str(mat.get("condition", "")).replace("_", " "))}'
+                    f' &nbsp;·&nbsp; <code>{html.escape(str(mat_id))}</code></div>',
                     unsafe_allow_html=True
                 )
-                st.caption(
-                    f"`{mat_id}` • "
-                    f"{mat.get('material_class', '').replace('_', ' ').title()} • "
-                    f"{mat.get('condition', '').replace('_', ' ')}"
-                )
             with col_b:
-                relevance = mat.get("relevance_score", 0)
-                st.caption(f"Relevance: {relevance:.2f}")
+                # 0-1 similarity, shown as a percentage because a bare decimal
+                # reads like a score the user is meant to interpret.
+                relevance = mat.get("relevance_score", 0) or 0
+                st.markdown(
+                    f'<div style="text-align:right;" class="muted">'
+                    f'{relevance * 100:.0f}% match</div>',
+                    unsafe_allow_html=True,
+                )
 
             # --- Family safety banners (visible but calm) ---
             if is_family(mat, "ceramic_"):
@@ -499,13 +625,33 @@ if prompt and prompt.strip():
 if not conv["messages"]:
     # Centered empty-state greeting, like a fresh ChatGPT thread.
     st.markdown(
-        "<div style='text-align:center;margin-top:16vh;'>"
-        "<div style='font-size:1.7rem;font-weight:600;color:#c7ccd3;'>🔧 Material Selection Assistant</div>"
-        "<div class='muted' style='margin-top:0.6rem;font-size:0.95rem;'>"
-        "Describe your design conditions and I'll recommend materials with verified data."
+        "<div style='text-align:center;margin-top:14vh;'>"
+        "<div style='font-size:1.65rem;font-weight:600;color:var(--text);"
+        "letter-spacing:-0.02em;'>Material Selection Assistant</div>"
+        "<div style='margin-top:0.7rem;font-size:0.95rem;color:var(--text-muted);"
+        "max-width:30rem;margin-left:auto;margin-right:auto;line-height:1.6;'>"
+        "Describe what you are designing and the conditions it has to survive. "
+        "Every recommendation comes from a verified property database."
         "</div></div>",
         unsafe_allow_html=True,
     )
+    # Starter prompts: a blank chat box is the hardest thing to answer.
+    st.write("")
+    ex_cols = st.columns(3)
+    EXAMPLES = [
+        "A boat fitting that will not corrode in seawater",
+        "A cheap plastic housing that sits outdoors in the sun",
+        "A shaft carrying 300 MPa at 200 C",
+    ]
+    for col, example in zip(ex_cols, EXAMPLES):
+        with col:
+            if st.button(example, key=f"ex_{example[:12]}", use_container_width=True):
+                conv["messages"].append({
+                    "role": "user", "content": example,
+                    "time": datetime.now().strftime("%H:%M"),
+                })
+                conv["title"] = example
+                st.rerun()
 else:
     # Replay the conversation: user messages as right-aligned WhatsApp-style
     # bubbles; under each message an inline action bar (regenerate / edit / copy)
@@ -519,7 +665,7 @@ else:
 
     def action_bar(idx, *, is_user, time_str):
         # Right-aligned cluster: send time + small borderless icon buttons.
-        _, area = st.columns([0.52, 0.48])
+        _, area = st.columns([0.44, 0.56])
         with area:
             if is_user:
                 tc, b_re, b_ed, b_cp = st.columns([0.40, 0.20, 0.20, 0.20])
@@ -529,18 +675,18 @@ else:
                 if time_str:
                     st.caption(time_str)
             with b_re:
-                if st.button("🔄", key=f"regen_{idx}", type="tertiary", help="Regenerate"):
+                if st.button("Retry", key=f"regen_{idx}", type="tertiary", help="Regenerate this answer"):
                     # Keep this turn's user query, drop its answer + everything after.
                     conv["messages"] = conv["messages"][: (idx + 1 if is_user else idx)]
                     st.session_state.editing_idx = None
                     st.rerun()
             if is_user:
                 with b_ed:
-                    if st.button("✏️", key=f"edit_{idx}", type="tertiary", help="Edit"):
+                    if st.button("Edit", key=f"edit_{idx}", type="tertiary", help="Edit this message"):
                         st.session_state.editing_idx = idx
                         st.rerun()
             with b_cp:
-                if st.button("📋", key=f"copy_{idx}", type="tertiary", help="Copy"):
+                if st.button("Copy", key=f"copy_{idx}", type="tertiary", help="Copy to clipboard"):
                     st.session_state["_pending_copy"] = (
                         conv["messages"][idx]["content"] if is_user
                         else conv["messages"][idx]["result"].get("summary", "")
