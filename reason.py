@@ -336,6 +336,8 @@ def contextualize_query(user_query: str, history: list) -> str:
 
     lines = []
     for turn in history[-3:]:                       # last few turns is enough context
+        if turn.get("reply") and not turn.get("materials"):
+            continue                                # a chat turn is not design context
         mats = ", ".join((turn.get("materials") or [])[:3])
         line = f'- User asked: "{turn.get("query", "")}"'
         if mats:
@@ -391,6 +393,11 @@ ABOUT_SYSTEM_PATTERNS = [
     r"^(who|what) (are|r) (you|u)$",
     r"^(how does (this|it) work|how do i use (this|it)|help|what do you do)$",
     r"^what (database|dataset|registry) (do you|does it) use$",
+    r"^(give me |can you give me |tell me )?(a |an )?(intro|introduction|overview)"
+    r"( about| of| on| to)? (you|u|this|it|yourself|the system|the tool)$",
+    r"^(introduce|describe) (yourself|you|this|the system|the tool)$",
+    r"^tell me about (you|u|this|it|yourself|the system|the tool)$",
+    r"^what (do|does) (you|u|this|it) do$",
 ]
 
 SMALL_TALK_REPLIES = {
@@ -477,6 +484,63 @@ def system_overview() -> str:
     return _overview_cache
 
 
+CHAT_PROMPT = """You are the conversational voice of a mechanical engineering material
+selection tool. Reply to the user's latest message naturally, in 2-4 short sentences.
+
+THE ONLY CAPABILITIES YOU MAY CLAIM:
+{facts}
+
+RULES:
+- Never claim an ability that is not listed above. Never invent material data here.
+- NEVER say you cannot help with materials or material questions - that is your whole
+  purpose. Out of scope means subjects OTHER than materials (maths, coding, trivia).
+- If the user asks for something out of scope, say so plainly and briefly, then point at
+  what you CAN do. Do not lecture and do not apologise repeatedly.
+- If they are reacting to a refusal you already gave (e.g. "so you can't do X?"), just
+  confirm it and move the conversation forward. Do NOT repeat the same explanation again.
+- Suggest an example query only when it genuinely helps, and at most two.
+- Plain prose, no headings, no bullet lists unless you are listing what the database holds.
+- Vary your wording between turns. Never paste the same paragraph twice.
+
+Recent conversation:
+{history}
+
+User: {user_query}
+Reply:"""
+
+
+def conversational_reply(user_query, history=None, kind="about_system"):
+    """An LLM-written reply for a non-material message, or None if no LLM.
+
+    Grounded in system_overview() so the model can only describe capabilities the
+    tool actually has - the same "database is the brain" rule the material path
+    follows, applied to conversation. Falls back to the canned text offline.
+    """
+    lines = []
+    for turn in (history or [])[-3:]:
+        q = (turn.get("query") or "").strip()
+        if q:
+            lines.append(f"User: {q}")
+        prev = (turn.get("reply") or "").strip()
+        if prev:
+            lines.append(f"You: {prev[:200]}")
+        mats = ", ".join((turn.get("materials") or [])[:3])
+        if mats:
+            lines.append(f"You recommended: {mats}")
+    history_block = "\n".join(lines) if lines else "(this is the first message)"
+
+    prompt = CHAT_PROMPT.format(facts=system_overview(),
+                                history=history_block,
+                                user_query=user_query)
+    try:
+        text, _warning = llm.generate(prompt, task="fast")
+    except Exception as exc:
+        print(f"  conversational reply failed: {exc}")
+        return None
+    text = (text or "").strip()
+    return text or None
+
+
 def off_topic_reply(reason: str = "") -> str:
     """Decline a non-materials question, saying WHY and what this tool is for."""
     lead = reason.strip() if reason else (
@@ -557,10 +621,19 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
         "chat_reply": None,
     }
 
-    # Step 0a: greetings, thanks and "what can you do" get a direct answer.
-    # Costs no API call and keeps the pipeline for actual design questions.
-    reply = small_talk_reply(user_query)
-    if reply:
+    # Step 0a: pure pleasantries are answered locally - they are formulaic, and
+    # spending a model call on "thanks" is waste. Questions ABOUT the tool fall
+    # through to the LLM below so the answer can respond to what was actually
+    # asked; the local text is only used when no model is reachable.
+    kind = classify_local(user_query)
+    if kind in ("thanks", "farewell"):
+        result["chat_reply"] = SMALL_TALK_REPLIES[kind]
+        result["summary"] = result["chat_reply"]
+        return result
+    if kind in ("greeting", "ack", "about_system"):
+        reply = conversational_reply(user_query, history, kind="about_system")
+        if reply is None:
+            reply = small_talk_reply(user_query)
         result["chat_reply"] = reply
         result["summary"] = reply
         return result
@@ -593,9 +666,16 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
 
     # The word list catches the common cases; understand_query flags anything
     # else that is not a material question ("what is the weather in Paris").
-    if str(understood.get("intent", "material_query")).lower() == "off_topic":
-        result["chat_reply"] = off_topic_reply(understood.get("off_topic_reason", ""))
-        result["summary"] = result["chat_reply"]
+    intent = str(understood.get("intent", "material_query")).lower()
+    if intent in ("off_topic", "about_system"):
+        # Let the model actually converse. Two different questions should not get
+        # the same paragraph back, and a follow-up should answer the follow-up.
+        reply = conversational_reply(user_query, history, kind=intent)
+        if reply is None:
+            reply = (system_overview() if intent == "about_system"
+                     else off_topic_reply(understood.get("off_topic_reason", "")))
+        result["chat_reply"] = reply
+        result["summary"] = reply
         result["understood"] = understood
         return result
 

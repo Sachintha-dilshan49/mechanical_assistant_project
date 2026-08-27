@@ -747,9 +747,13 @@ else:
                 pending_q = m["content"]
             elif pending_q is not None:
                 res = m.get("result", {})
-                if not res.get("chat_reply"):     # small talk is not design context
-                    names = [x.get("common_name", "") for x in res.get("materials", [])]
-                    prior.append({"query": pending_q, "materials": names})
+                # Chat replies are kept too: "so you can't do X?" only makes sense
+                # if the model can see the refusal it is responding to.
+                prior.append({
+                    "query": pending_q,
+                    "materials": [x.get("common_name", "") for x in res.get("materials", [])],
+                    "reply": res.get("chat_reply") or "",
+                })
                 pending_q = None
 
         with st.chat_message("assistant", avatar="🔧"):

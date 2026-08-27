@@ -98,7 +98,7 @@ filter over an arbitrary numeric cutoff.
 
 OUTPUT FORMAT (valid JSON only, no other text):
 {
-    "intent": "<material_query, or off_topic for greetings, small talk, or anything not about choosing a material>",
+    "intent": "<material_query | about_system | off_topic>",
     "off_topic_reason": "<only when intent is off_topic: one short clause naming what the user actually asked for, e.g. 'That's a maths problem' or 'That's a general knowledge question'>",
     "semantic_query": "<short rephrasing of the design intent, 5-15 words>",
     "filters": { <metadata filters> },
@@ -170,14 +170,22 @@ Query: "solve 2x + 5 = 15 for me"
 {"intent":"off_topic","off_topic_reason":"That's a maths problem","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Algebra, nothing to do with choosing a material."}
 
 Query: "what materials do you have in the database?"
-{"intent":"off_topic","off_topic_reason":"That's a question about the tool itself rather than a design","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Asking about coverage, not asking for a recommendation."}
+{"intent":"about_system","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Asking about coverage, not asking for a recommendation."}
+
+Query: "give me an intro about you"
+{"intent":"about_system","semantic_query":"","filters":{},"extracted_constraints":{},"reasoning":"Asking the tool to introduce itself."}
 
 INTENT:
-Set "intent" to "off_topic" when the message is not a request for a material -
-a greeting, thanks, chit-chat, a question about the tool itself, or a question about
-some other subject entirely (maths, coding, trivia). In that case the other fields may
-be empty, but ALWAYS give a short "off_topic_reason" naming what was actually asked,
-so the user gets a real explanation instead of a generic refusal. Anything describing an object, a part, or design
+Choose "intent" from exactly three values:
+- "material_query"  - the user wants a material for something. Anything describing an
+  object, a part, or design conditions, even when vague.
+- "about_system"    - the user is asking what this tool is, what it can do, what data it
+  holds, or asking for an introduction. ("what do you have", "give me an intro about you",
+  "who are you", "what can you do", "how does this work")
+- "off_topic"       - a greeting, chit-chat, or a question about some other subject
+  entirely (maths, coding, trivia, translation).
+For off_topic, give a short "off_topic_reason" naming what was actually asked, so the
+user gets a real explanation instead of a generic refusal. Anything describing an object, a part, or design
 conditions is "material_query", even when it is vague.
 
 Now process the user's query below. Output ONLY the JSON, no other text, no markdown fences.
