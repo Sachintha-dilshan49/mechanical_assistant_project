@@ -194,6 +194,129 @@ def _start_cooldown(provider, reason="quota exhausted"):
 # =================================================================
 # PER-PROVIDER CALLS
 # =================================================================
+# =================================================================
+# USAGE LOG
+# Providers do not offer a "how much have I spent today" endpoint, so the
+# only reliable record is the one we keep. Every call reports its own token
+# count; we store it and can answer the question offline, for free.
+# =================================================================
+def _record_usage(provider, model, prompt_tokens, completion_tokens):
+    conn = _cache_conn()
+    if conn is None:
+        return
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS usage_log (
+                            ts REAL NOT NULL,
+                            provider TEXT NOT NULL,
+                            model TEXT NOT NULL,
+                            prompt_tokens INTEGER NOT NULL,
+                            completion_tokens INTEGER NOT NULL)""")
+        conn.execute("INSERT INTO usage_log VALUES (?, ?, ?, ?, ?)",
+                     (time.time(), provider, model,
+                      int(prompt_tokens or 0), int(completion_tokens or 0)))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass          # usage accounting must never break a request
+
+
+def _usage_from(resp, provider, model):
+    """Pull the token counts out of whichever SDK shape this is."""
+    try:
+        if provider == "gemini":
+            u = getattr(resp, "usage_metadata", None)
+            if u:
+                _record_usage(provider, model,
+                              getattr(u, "prompt_token_count", 0),
+                              getattr(u, "candidates_token_count", 0))
+        else:
+            u = getattr(resp, "usage", None)
+            if u:
+                _record_usage(provider, model,
+                              getattr(u, "prompt_tokens", 0),
+                              getattr(u, "completion_tokens", 0))
+    except Exception:
+        pass
+
+
+def usage_since(hours=24):
+    """Tokens this app has spent per provider in the last N hours.
+
+    Returns {provider: {"calls": n, "prompt": n, "completion": n, "total": n}}.
+    This is what WE sent - the provider's own counter may differ slightly, and
+    a rolling daily limit is measured on their clock, not ours.
+    """
+    conn = _cache_conn()
+    if conn is None:
+        return {}
+    try:
+        rows = conn.execute(
+            """SELECT provider, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)
+               FROM usage_log WHERE ts > ? GROUP BY provider""",
+            (time.time() - hours * 3600,)).fetchall()
+        conn.close()
+    except Exception:
+        return {}
+    out = {}
+    for provider, calls, ptok, ctok in rows:
+        ptok, ctok = ptok or 0, ctok or 0
+        out[provider] = {"calls": calls, "prompt": ptok,
+                         "completion": ctok, "total": ptok + ctok}
+    return out
+
+
+def quota_status():
+    """What each provider says is left, where it will tell us.
+
+    Groq returns x-ratelimit-* headers, so we read them from a 1-token call.
+    Gemini does not expose remaining quota through the API at all. DeepSeek
+    exposes an account balance rather than a rate limit.
+    """
+    status = []
+    for provider in ("groq", "gemini", "deepseek"):
+        if _CLIENT_GETTERS[provider]() is None:
+            continue
+        if provider == "groq":
+            try:
+                model = GROQ_MODELS["fast"][0]
+                raw = _groq_client().chat.completions.with_raw_response.create(
+                    model=model, messages=[{"role": "user", "content": "hi"}],
+                    max_completion_tokens=1)
+                h = raw.headers
+                status.append({
+                    "provider": "groq",
+                    "tokens_remaining": h.get("x-ratelimit-remaining-tokens"),
+                    "tokens_limit": h.get("x-ratelimit-limit-tokens"),
+                    "requests_remaining": h.get("x-ratelimit-remaining-requests"),
+                    "resets_in": h.get("x-ratelimit-reset-tokens"),
+                    "note": "per-minute window; the daily cap shows up as a 429",
+                })
+            except Exception as exc:
+                status.append({"provider": "groq", "error": str(exc)[:140]})
+        elif provider == "deepseek":
+            try:
+                import httpx
+                r = httpx.get("https://api.deepseek.com/user/balance",
+                              headers={"Authorization":
+                                       f"Bearer {os.getenv('DEEPSEEK_API_KEY')}"},
+                              timeout=15)
+                info = r.json().get("balance_infos", [{}])[0]
+                status.append({
+                    "provider": "deepseek",
+                    "balance": f"{info.get('total_balance')} {info.get('currency')}",
+                    "note": "account balance, not a rate limit",
+                })
+            except Exception as exc:
+                status.append({"provider": "deepseek", "error": str(exc)[:140]})
+        else:
+            status.append({
+                "provider": "gemini",
+                "note": "Gemini does not report remaining quota through the API - "
+                        "check aistudio.google.com/app/apikey",
+            })
+    return status
+
+
 def _call_groq(model, prompt, json_output):
     kwargs = {
         "model": model,
@@ -216,6 +339,7 @@ def _call_groq(model, prompt, json_output):
             resp = _groq_client().chat.completions.create(**kwargs)
         else:
             raise
+    _usage_from(resp, "groq", model)
     return resp.choices[0].message.content
 
 
@@ -226,6 +350,7 @@ def _call_gemini(model, prompt, json_output):
     resp = _gemini_client().models.generate_content(
         model=model, contents=prompt, config=config
     )
+    _usage_from(resp, "gemini", model)
     # .text is None when the model returns no text part (safety block, MAX_TOKENS,
     # or any non-STOP finish reason).
     return resp.text
@@ -248,6 +373,7 @@ def _call_deepseek(model, prompt, json_output):
             resp = _deepseek_client().chat.completions.create(**kwargs)
         else:
             raise
+    _usage_from(resp, "deepseek", model)
     return resp.choices[0].message.content
 
 

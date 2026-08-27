@@ -296,10 +296,66 @@ def rating_bar(value, max_value=5):
     )
 
 
+# The free tier that actually binds is Groq's 200,000 tokens per day. It is the
+# only budget we can measure, so it is what the bar represents.
+DAILY_TOKEN_BUDGET = 200_000
+
+
+def usage_gauge():
+    """(fraction_used, plain_english) for today's AI budget, or None.
+
+    Deliberately returns no token counts. "5,192 of 200,000 tokens across 4
+    calls to groq" is precise and useless to someone who just wants to know
+    whether they can keep asking questions.
+    """
+    try:
+        import llm as _llm
+        used = _llm.usage_since(24)
+    except Exception:
+        return None
+    if not used:
+        return (0.0, "Nothing used yet today")
+    spent = used.get("groq", {}).get("total", 0) or sum(u["total"] for u in used.values())
+    frac = min(1.0, spent / DAILY_TOKEN_BUDGET)
+    if frac < 0.25:
+        phrase = "Plenty left today"
+    elif frac < 0.60:
+        phrase = "About a third used today"
+    elif frac < 0.85:
+        phrase = "Over half used today"
+    else:
+        phrase = "Running low today"
+    return (frac, phrase)
+
+
+def usage_bar_html(frac, phrase):
+    """A slim bar. Colour shifts only when it is worth noticing."""
+    pct = max(2, int(round(frac * 100)))     # a sliver is visible at 0
+    colour = "var(--accent)"
+    if frac >= 0.85:
+        colour = "#B85C4C"
+    elif frac >= 0.60:
+        colour = "#C18A3E"
+    return (
+        '<div style="margin-top:0.15rem;">'
+        '<div style="height:4px;border-radius:2px;background:rgba(38,38,36,0.09);'
+        'overflow:hidden;">'
+        f'<div style="width:{pct}%;height:100%;background:{colour};'
+        'border-radius:2px;"></div></div>'
+        f'<div style="font-size:0.72rem;color:var(--text-faint);margin-top:0.35rem;">'
+        f'{phrase}</div></div>'
+    )
+
+
 def rank_badge(rank):
     """Rank chip. Only the top pick is accented - everything else is quiet."""
     cls = "rank-badge top" if rank == 1 else "rank-badge"
     return f'<span class="{cls}">{rank}</span>'
+
+
+# How many materials to recommend. Was a sidebar slider; the reasoning prompt is
+# tuned around three, and it is not a setting most users want to think about.
+RESULTS_PER_ANSWER = 3
 
 
 # =================================================================
@@ -349,14 +405,24 @@ with st.sidebar:
             st.session_state.editing_idx = None
             st.rerun()
 
-    # Settings + reset pinned at the bottom.
+    # Pinned at the bottom: how much of today's allowance is gone, as a bar.
+    # Everything numeric moved to `py check_llm.py` - a sidebar is for glancing
+    # at, not for reading.
     st.markdown("---")
-    top_k = st.slider("Results per answer", 2, 5, 3)
-    if st.button("Clear all chats", use_container_width=True):
+    _gauge = usage_gauge()
+    if _gauge is not None:
+        st.markdown(
+            '<div style="font-size:0.72rem;font-weight:600;letter-spacing:0.06em;'
+            'text-transform:uppercase;color:var(--text-faint);">Daily usage</div>'
+            + usage_bar_html(*_gauge),
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+    if st.button("Clear all chats", use_container_width=True, type="tertiary"):
         st.session_state.conversations = [{"title": "New chat", "messages": []}]
         st.session_state.current = 0
         st.rerun()
-    st.caption("AI-assisted recommendations — verify critical designs with an engineer.")
 
 
 # =================================================================
@@ -632,6 +698,9 @@ if not conv["messages"]:
         "max-width:30rem;margin-left:auto;margin-right:auto;line-height:1.6;'>"
         "Describe what you are designing and the conditions it has to survive. "
         "Every recommendation comes from a verified property database."
+        "</div>"
+        "<div style='margin-top:1.6rem;font-size:0.78rem;color:var(--text-faint);'>"
+        "AI-assisted recommendations — verify critical designs with an engineer."
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -762,7 +831,7 @@ else:
             # the wait feel like progress rather than a hang.
             with st.status("Working...", expanded=False) as status:
                 result = reason_about_query(
-                    conv["messages"][-1]["content"], top_k=top_k, history=prior,
+                    conv["messages"][-1]["content"], top_k=RESULTS_PER_ANSWER, history=prior,
                     on_step=lambda label: status.update(label=label),
                 )
                 status.update(label="Done", state="complete")

@@ -106,7 +106,27 @@ the `NOT_FOUND` sentinel on the way in, since Chroma metadata can't hold nulls.
 venv\Scripts\streamlit run app.py     # start the app
 py init_db.py                         # first-time setup: seed SQLite from the CSVs
 py reindex.py                         # rebuild the search index from SQLite
+py check_llm.py                       # providers, models, token usage and quota
 ```
+
+### Checking your token usage
+
+`check_llm.py` reports two different things:
+
+- **[1b] what this app has spent** - read from a local log (`data/llm_cache.db`),
+  costs nothing, and is the number that matters day to day.
+- **[1c] what the provider reports** - Groq returns live rate-limit headers;
+  Gemini does not expose remaining quota through the API at all, so check
+  [aistudio.google.com](https://aistudio.google.com/app/apikey) for that one.
+
+The app sidebar deliberately shows none of this. It has a slim **Daily usage**
+bar and a phrase ("Plenty left today"), because token counts and provider names
+mean nothing to someone trying to pick a material. The numbers live here, in the
+CLI, for when you actually want them.
+
+A fresh query costs about **8,500 tokens** (~3,300 on the fast model for query
+understanding, ~5,200 on the smart model for reasoning). A repeated query costs
+**zero** - it is served from the prompt cache.
 
 `init_db.py` refuses to overwrite a populated table (`--force` overrides), so
 re-running it can't discard materials added after the initial seed.

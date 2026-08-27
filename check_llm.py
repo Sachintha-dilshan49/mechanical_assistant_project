@@ -45,6 +45,37 @@ if "deepseek" in providers:
     print("          signup - treat it as overflow capacity, not a permanent tier.")
 
 # -----------------------------------------------------------------
+# What this app has spent, and what the provider says is left
+# -----------------------------------------------------------------
+print("\n[1b] Tokens THIS APP has spent (last 24h, from the local log)")
+usage = llm.usage_since(24)
+if not usage:
+    print("    nothing logged yet")
+else:
+    total = 0
+    for provider, u in sorted(usage.items()):
+        print(f"    {provider:<10} {u['total']:>7,} tokens  "
+              f"({u['calls']} calls, {u['prompt']:,} in / {u['completion']:,} out)")
+        total += u["total"]
+    print(f"    {'TOTAL':<10} {total:>7,} tokens")
+    # Groq's free tier is 200k tokens/day; give the user a sense of where they are.
+    groq_used = usage.get("groq", {}).get("total", 0)
+    if groq_used:
+        print(f"\n    Groq daily cap is 200,000 tokens -> roughly "
+              f"{100 * groq_used / 200000:.0f}% used in the last 24h")
+
+print("\n[1c] What the providers report right now")
+for row in llm.quota_status():
+    name = row.pop("provider")
+    if "error" in row:
+        print(f"    {name:<10} could not read: {row['error']}")
+        continue
+    bits = ", ".join(f"{k.replace('_', ' ')}={v}" for k, v in row.items() if k != "note")
+    print(f"    {name:<10} {bits}" if bits else f"    {name:<10}")
+    if row.get("note"):
+        print(f"               ({row['note']})")
+
+# -----------------------------------------------------------------
 # What models the Groq key can actually see
 # -----------------------------------------------------------------
 if "groq" in providers:
