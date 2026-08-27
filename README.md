@@ -21,13 +21,72 @@ User query → LLM extracts filters → ChromaDB (semantic) + SQLite (exact valu
 
 ## Tech Stack
 
-- **Python 3.10+**
-- **ChromaDB** — vector database
-- **sentence-transformers** — embeddings
-- **SQLite** — built-in, for precise lookups
-- **pandas + openpyxl** — read the materials spreadsheet
-- **Streamlit** — UI
-- **google-genai** — Gemini LLM for query understanding + reasoning
+- **Python 3.11**
+- **Streamlit** - chat UI
+- **ChromaDB** + **sentence-transformers** - semantic search over material descriptions
+- **SQLite** - the materials record store and the allowable-stress tables
+- **groq / google-genai / openai** - three LLM providers behind one interface (`llm.py`)
+
+---
+
+## File Structure
+
+```
+mechanical_assistant_project/
+|
+|-- app.py                  Streamlit UI - chat, material cards, comparison table
+|
+|-- THE PIPELINE  (a query flows down through these, in order)
+|   |-- reason.py           Orchestrator: intent gate -> retrieve -> rank -> stress lookup
+|   |-- understand_query.py Plain English -> structured filters + intent
+|   |-- retrieve.py         ChromaDB semantic search + SQLite stress lookups
+|   |-- llm.py              All LLM calls: provider failover, quota cooldowns, cache
+|
+|-- THE DATA LAYER
+|   |-- db.py               The 43-column schema. Every DB read/write goes through here
+|   |-- init_db.py          One-time: seed SQLite from the curated CSVs
+|   |-- reindex.py          Rebuild the ChromaDB index from SQLite (run after edits)
+|   |-- build_v15_dataset.py  Regenerates the curated CSVs (seed source, not live data)
+|
+|-- TOOLS
+|   |-- check_llm.py        Which providers/models your keys reach + cache status
+|   |-- bench_accuracy.py   Retrieval recall and top-1 accuracy over test queries
+|
+|-- data/
+|   |-- materials.db        SOURCE OF TRUTH - materials + allowable_stress
+|   |-- chroma_db/          Derived search index (safe to delete, rebuild with reindex.py)
+|   |-- llm_cache.db        Cached LLM responses (safe to delete)
+|   |-- materials.csv       Curated seed data
+|   |-- stress_temperature.csv
+|
+|-- archive/                Superseded scripts, kept for reference. Do not run.
+|-- .env                    API keys (never commit)
+|-- requirments.txt         Dependencies
+```
+
+### How a query flows
+
+```
+      "a boat fitting that won't corrode"
+                  |
+      app.py -----+
+                  v
+      reason.py  --> is this even a material question?      (no API call)
+                  |     greeting / about the tool / off-topic -> answer directly
+                  v
+      understand_query.py --> {filters, constraints, intent}   [LLM: fast]
+                  v
+      retrieve.py  --> 18 class-diverse candidates from ChromaDB
+                  v
+      reason.py  --> LLM selects and ranks from that pool      [LLM: smart]
+                  v
+      retrieve.py  --> allowable stress at temperature, from SQLite
+                  v
+      app.py  --> ranked cards with properties, warnings, sources
+```
+
+The LLM never supplies a property value. It chooses among rows and explains the
+choice; every number on screen comes from SQLite.
 
 ---
 

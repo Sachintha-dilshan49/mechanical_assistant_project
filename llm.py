@@ -62,6 +62,17 @@ DEEPSEEK_MODELS = {
     "fast":  [os.getenv("DEEPSEEK_MODEL_FAST", "deepseek-v4-flash"), "deepseek-v4-pro"],
 }
 
+# Which provider leads for each task. The two tasks go to DIFFERENT providers on
+# purpose: rate limits are per-model per-provider, so splitting them doubles the
+# effective throughput instead of draining one token bucket twice per query.
+# Measured: query understanding is ~2.7k tokens and gemini-2.5-flash-lite answers
+# it in ~2s, while the bigger reasoning prompt is better served by Groq's larger
+# free allowance. LLM_PRIMARY overrides both if you want one provider only.
+TASK_PRIMARY = {
+    "fast":  (os.getenv("LLM_PRIMARY_FAST") or "gemini").strip().lower(),
+    "smart": (os.getenv("LLM_PRIMARY_SMART") or "groq").strip().lower(),
+}
+
 # How long to stop asking a provider after it reports an exhausted quota.
 # Without this, every request would pay the failing call's latency before
 # falling through to the other provider.
@@ -105,16 +116,6 @@ def _gemini_client():
     return _clients["gemini"]
 
 
-# Which provider leads for each task. The two tasks go to DIFFERENT providers on
-# purpose: rate limits are per-model per-provider, so splitting them doubles the
-# effective throughput instead of draining one token bucket twice per query.
-# Measured: query understanding is ~2.7k tokens and gemini-2.5-flash-lite answers
-# it in ~2s, while the bigger reasoning prompt is better served by Groq's larger
-# free allowance. LLM_PRIMARY overrides both if you want one provider only.
-TASK_PRIMARY = {
-    "fast":  (os.getenv("LLM_PRIMARY_FAST") or "gemini").strip().lower(),
-    "smart": (os.getenv("LLM_PRIMARY_SMART") or "groq").strip().lower(),
-}
 
 
 def _deepseek_client():
@@ -162,7 +163,9 @@ def _classify(exc):
 
     # A bad or expired key fails identically on every model, so treat it like a
     # dead provider rather than retrying the whole model list against it.
-    if status in (401, 403) or "invalid api key" in text or "unauthorized" in text             or "api key not valid" in text or "permission denied" in text:
+    if (status in (401, 403) or "invalid api key" in text
+            or "unauthorized" in text or "api key not valid" in text
+            or "permission denied" in text):
         return "auth"
     if status == 429 or "429" in text or "rate limit" in text \
             or "resource_exhausted" in text or "quota" in text \
