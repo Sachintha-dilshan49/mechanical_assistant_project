@@ -745,17 +745,33 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
             if text.startswith("```"):
                 text = "\n".join(l for l in text.split("\n") if not l.startswith("```"))
             parsed = json.loads(text)
-            summary = parsed.get("overall_summary", "")
-            for item in parsed.get("selected", []):
+            if not isinstance(parsed, dict):
+                raise ValueError("top-level JSON is not an object")
+            summary = parsed.get("overall_summary") or ""
+            if not isinstance(summary, str):
+                summary = str(summary)
+            # Everything below is defensive on purpose: this is model output, so
+            # "selected" can be a string, a list of strings, or contain ids that
+            # were never in the pool. None of that may reach the UI as an
+            # exception - the pipeline has a working fallback right below.
+            items = parsed.get("selected")
+            if not isinstance(items, list):
+                items = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
                 mid = item.get("material_id")
                 if mid in pool_by_id and mid not in reasoning:   # ignore hallucinated/dupe ids
                     selected.append(pool_by_id[mid])
-                    reasoning[mid] = item.get("reasoning", "")
+                    note = item.get("reasoning", "")
+                    reasoning[mid] = note if isinstance(note, str) else str(note)
                 if len(selected) >= top_k:
                     break
             if fallback_note:
                 result["warning"] = fallback_note
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, AttributeError, TypeError) as exc:
+            print(f"  malformed model output ({type(exc).__name__}): {exc}")
+            selected, reasoning, summary = [], {}, ""
             result["warning"] = "AI returned malformed output - showing top database matches."
 
     if not selected:

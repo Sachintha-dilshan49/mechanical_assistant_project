@@ -231,6 +231,18 @@ button[kind="tertiary"]:hover { color: var(--accent) !important; }
 # Value coercion — v3 data carries floats (e.g. 5.0) and the string
 # "NOT_FOUND" for properties that don't apply to a material's family.
 # -----------------------------------------------------------------
+def esc(v):
+    """HTML-escape a value bound for an unsafe_allow_html block.
+
+    Everything rendered through those blocks comes from either the model or the
+    database, and neither is trusted markup: a summary containing a tag was
+    being injected straight into the page. Escaping costs literal asterisks if a
+    model emits markdown here, which is the right trade for not rendering
+    attacker-controlled HTML.
+    """
+    return html.escape(str(v)) if v is not None else ""
+
+
 def is_na(v):
     """True when a value is missing or the NOT_FOUND sentinel."""
     return v is None or (isinstance(v, str) and v.strip().upper() in ("", "NOT_FOUND"))
@@ -447,7 +459,7 @@ def render_result(result):
     summary = result.get("summary", "")
     if summary:
         st.markdown('<div class="sec">Summary</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="note note-accent">{summary}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="note note-accent">{esc(summary)}</div>', unsafe_allow_html=True)
 
     # --- Query understanding (collapsible) ---
     with st.expander("How your query was interpreted"):
@@ -566,7 +578,7 @@ def render_result(result):
                 pills.append(f"${mat.get('approx_cost_usd_per_kg')}/kg")
             if not is_na(mat.get("machinability_index")):
                 pills.append(f"Machinability {fmt(mat.get('machinability_index'))}/100")
-            pills_html = "".join(f'<span class="prop-pill">{p}</span>' for p in pills)
+            pills_html = "".join(f'<span class="prop-pill">{esc(p)}</span>' for p in pills)
             st.markdown(pills_html, unsafe_allow_html=True)
 
             st.write("")  # spacer
@@ -612,13 +624,13 @@ def render_result(result):
             jm = mat.get("joining_method")
             if not is_na(jm):
                 for method in str(jm).split("|"):
-                    chips.append(f'<span class="prop-pill">{method.replace("_", " ")}</span>')
+                    chips.append(f'<span class="prop-pill">{esc(method.replace("_", " "))}</span>')
             flam = mat.get("flammability")
             if not is_na(flam):
                 fc = {"V-0": "#86ab8c", "V-1": "#9bb084", "V-2": "#b3ad80", "HB": "#b09280"}.get(str(flam), "#7c8088")
                 chips.append(
                     f'<span class="prop-pill" style="border-color:{fc};color:{fc};">'
-                    f'UL94 {flam}</span>'
+                    f'UL94 {esc(flam)}</span>'
                 )
             if not is_na(mat.get("uv_resistance")):
                 chips.append(f'<span class="prop-pill">UV {rint(mat.get("uv_resistance"))}/5</span>')
@@ -632,9 +644,9 @@ def render_result(result):
                 interp_note = " (interpolated)" if stress_info.get("interpolated") else " (exact)"
                 st.markdown(
                     f'<div class="note">'
-                    f'<b>Allowable stress at {stress_info.get("temperature_C")}°C:</b> '
-                    f'{stress_info.get("stress_MPa")} MPa{interp_note}<br>'
-                    f'<span class="muted">Source: {stress_info.get("source")}</span>'
+                    f'<b>Allowable stress at {esc(stress_info.get("temperature_C"))}°C:</b> '
+                    f'{esc(stress_info.get("stress_MPa"))} MPa{interp_note}<br>'
+                    f'<span class="muted">Source: {esc(stress_info.get("source"))}</span>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
@@ -643,7 +655,7 @@ def render_result(result):
             reasoning = result.get("reasoning", {}).get(mat_id, "")
             if reasoning:
                 st.markdown(
-                    f'<div class="note note-accent"><b>Why this fits:</b> {reasoning}</div>',
+                    f'<div class="note note-accent"><b>Why this fits:</b> {esc(reasoning)}</div>',
                     unsafe_allow_html=True
                 )
 
@@ -651,7 +663,7 @@ def render_result(result):
             warnings = mat.get("key_warnings", "")
             if not is_na(warnings):
                 st.markdown(
-                    f'<div class="warn"><b>Watch out for:</b> {warnings}</div>',
+                    f'<div class="warn"><b>Watch out for:</b> {esc(warnings)}</div>',
                     unsafe_allow_html=True
                 )
             
@@ -676,6 +688,13 @@ def render_result(result):
 # =================================================================
 # CHAT  (ChatGPT-style: message bubbles + input pinned at the bottom)
 # =================================================================
+# Clamp before indexing. A stale `current` (an older session, or any future
+# delete-chat feature) would otherwise raise IndexError here and take the whole
+# page down with a traceback instead of showing a chat.
+if not st.session_state.conversations:
+    st.session_state.conversations = [{"title": "New chat", "messages": []}]
+st.session_state.current = max(
+    0, min(st.session_state.current, len(st.session_state.conversations) - 1))
 conv = st.session_state.conversations[st.session_state.current]
 
 # Chat box is always pinned to the bottom regardless of where it's called.
