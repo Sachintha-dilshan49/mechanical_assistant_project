@@ -165,6 +165,24 @@ html, body, [class*="css"] {
 .banner-warn   { background: rgba(193, 138, 62, 0.08); border-left: 2px solid #C18A3E; color: #7A5A24; }
 .muted { color: var(--text-faint); font-size: 0.75rem; }
 
+/* Data-confidence tag. Says whether a card's numbers came from a primary
+   source or were estimated - the free-text `sources` field can't be read at a
+   glance, and a student has no other way to tell the two apart. Estimated is
+   the loudest of the three on purpose. */
+.conf-tag {
+    display: inline-block;
+    padding: 0.16rem 0.5rem;
+    margin: 0.5rem 0 0.1rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    border: 1px solid;
+}
+.conf-verified { background: rgba(94, 140, 99, 0.10);  border-color: rgba(94, 140, 99, 0.35);  color: #4A7350; }
+.conf-cross    { background: rgba(110, 107, 99, 0.08); border-color: var(--border-strong);     color: var(--text-muted); }
+.conf-est      { background: rgba(193, 138, 62, 0.10); border-color: rgba(193, 138, 62, 0.40); color: #7A5A24; }
+
 /* -----------------------------------------------------------------
    CHAT
    The user's turn is a quiet outlined block, not a coloured bubble.
@@ -306,6 +324,23 @@ def rating_bar(value, max_value=5):
         f'<div style="width:{pct}%;height:100%;background:{c};"></div></div>'
         f'<span class="muted" style="min-width:1.6rem;text-align:right;">{v}/5</span></div>'
     )
+
+
+# How much to trust a card's numbers. Anything unrecognised - a blank field, or
+# a row indexed before the column existed - is shown as "estimated" rather than
+# hidden: no tag would read as "no concerns", which is the wrong way to be wrong.
+CONFIDENCE_TAGS = {
+    "verified_primary_source": ("Verified source", "conf-verified"),
+    "cross_referenced":        ("Cross-checked", "conf-cross"),
+    "estimated":               ("Estimated - verify before use", "conf-est"),
+}
+
+
+def confidence_tag(value):
+    """The data-confidence tag for a material card, as escaped HTML."""
+    key = "" if is_na(value) else str(value).strip().lower()
+    label, css_class = CONFIDENCE_TAGS.get(key, CONFIDENCE_TAGS["estimated"])
+    return f'<span class="conf-tag {css_class}">{esc(label)}</span>'
 
 
 # The free tier that actually binds is Groq's 200,000 tokens per day. It is the
@@ -536,6 +571,11 @@ def render_result(result):
                     f'{relevance * 100:.0f}% match</div>',
                     unsafe_allow_html=True,
                 )
+
+            # Confidence tag before anything numeric, so the reader knows how
+            # much weight the properties below can carry.
+            st.markdown(confidence_tag(mat.get("data_confidence")),
+                        unsafe_allow_html=True)
 
             # --- Family safety banners (visible but calm) ---
             if is_family(mat, "ceramic_"):

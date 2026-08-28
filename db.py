@@ -20,6 +20,15 @@ DB_FILE = "data/materials.db"
 # Sentinel the app layer uses for a property that does not apply to a material.
 NOT_FOUND = "NOT_FOUND"
 
+# How far a row's numbers can be trusted. A student cannot tell an ASME table
+# value from one I estimated by reading the free-text `sources` field, so the
+# claim is made explicit here and shown on the card.
+DATA_CONFIDENCE_VALUES = ("verified_primary_source", "cross_referenced", "estimated")
+# Anything unrecognised (blank, typo, a row predating this column) becomes
+# "estimated" rather than NULL: under-claiming is the safe direction, and it
+# keeps the UI from having to render a fourth, meaningless state.
+DEFAULT_DATA_CONFIDENCE = "estimated"
+
 # -----------------------------------------------------------------
 # SCHEMA — (column, sql_type). Order matches data/materials.csv so the two
 # stay easy to compare by eye.
@@ -78,6 +87,7 @@ MATERIAL_COLUMNS = [
     ("typical_applications",          "TEXT"),
     ("key_warnings",                  "TEXT"),
     ("sources",                       "TEXT"),
+    ("data_confidence",               "TEXT"),
     ("description_text",              "TEXT"),
     ("stress_table_id",               "TEXT"),
 ]
@@ -199,6 +209,19 @@ def to_text(val):
     return s
 
 
+def to_confidence(val):
+    """One of DATA_CONFIDENCE_VALUES, defaulting to the most conservative one.
+
+    Never returns None: an unset confidence would read on the card as "no claim
+    made", which is exactly the ambiguity this column exists to remove.
+    """
+    s = to_text(val)
+    if s is None:
+        return DEFAULT_DATA_CONFIDENCE
+    s = s.lower()
+    return s if s in DATA_CONFIDENCE_VALUES else DEFAULT_DATA_CONFIDENCE
+
+
 def row_to_sql(row, provenance="curated"):
     """Map one raw row (CSV dict or extractor output) to SQL values.
 
@@ -208,7 +231,9 @@ def row_to_sql(row, provenance="curated"):
     out = {}
     for name, sql_type in MATERIAL_COLUMNS:
         raw = row.get(name)
-        if sql_type == "REAL":
+        if name == "data_confidence":
+            out[name] = to_confidence(raw)
+        elif sql_type == "REAL":
             out[name] = to_number(raw)
         elif sql_type == "INTEGER":
             out[name] = to_int(raw)

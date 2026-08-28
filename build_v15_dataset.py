@@ -91,15 +91,21 @@ stress_data = {
 
 # description_text is already curated per material (family-aware), so it is
 # written as-is from the data above -- not regenerated.
-materials_columns = ['material_id', 'common_name', 'uns_number', 'aisi_grade', 'material_class', 'condition', 'yield_strength_MPa', 'ultimate_tensile_strength_MPa', 'elongation_percent', 'hardness_HB', 'hardness_shore_d', 'fatigue_limit_MPa', 'elastic_modulus_GPa', 'density_kg_m3', 'max_service_temp_C', 'min_service_temp_C', 'max_continuous_use_temp_C', 'corrosion_seawater', 'corrosion_acidic', 'corrosion_alkaline', 'corrosion_atmospheric', 'corrosion_high_temp', 'chemical_resistance_solvents', 'chemical_resistance_acids', 'chemical_resistance_alkalis', 'chemical_resistance_fuels', 'weldability', 'weldability_notes', 'joining_method', 'machinability_index', 'flammability', 'water_absorption_percent', 'uv_resistance', 'cost_class', 'approx_cost_usd_per_kg', 'availability', 'stock_forms', 'fatigue_rating', 'typical_applications', 'key_warnings', 'sources', 'description_text', 'stress_table_id']
+materials_columns = ['material_id', 'common_name', 'uns_number', 'aisi_grade', 'material_class', 'condition', 'yield_strength_MPa', 'ultimate_tensile_strength_MPa', 'elongation_percent', 'hardness_HB', 'hardness_shore_d', 'fatigue_limit_MPa', 'elastic_modulus_GPa', 'density_kg_m3', 'max_service_temp_C', 'min_service_temp_C', 'max_continuous_use_temp_C', 'corrosion_seawater', 'corrosion_acidic', 'corrosion_alkaline', 'corrosion_atmospheric', 'corrosion_high_temp', 'chemical_resistance_solvents', 'chemical_resistance_acids', 'chemical_resistance_alkalis', 'chemical_resistance_fuels', 'weldability', 'weldability_notes', 'joining_method', 'machinability_index', 'flammability', 'water_absorption_percent', 'uv_resistance', 'cost_class', 'approx_cost_usd_per_kg', 'availability', 'stock_forms', 'fatigue_rating', 'typical_applications', 'key_warnings', 'sources', 'data_confidence', 'description_text', 'stress_table_id']
 
 Path("data").mkdir(exist_ok=True)
+
+# Nothing above carries a data_confidence yet, so every row is written as
+# "estimated". That is the honest default: a row is only upgradeable once its
+# numbers have actually been checked against the primary source. Give a dict
+# above its own 'data_confidence' key to override it here.
+DEFAULT_DATA_CONFIDENCE = "estimated"
 
 with open("data/materials.csv", "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=materials_columns)
     writer.writeheader()
     for mat in materials:
-        writer.writerow(mat)
+        writer.writerow({**mat, "data_confidence": mat.get("data_confidence") or DEFAULT_DATA_CONFIDENCE})
 print(f"Wrote data/materials.csv with {len(materials)} rows")
 
 stress_columns = ["material_id", "stress_table_id", "temperature_C", "stress_MPa", "source", "notes"]

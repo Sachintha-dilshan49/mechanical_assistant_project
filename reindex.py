@@ -102,6 +102,19 @@ for i, _ in enumerate(res["ids"][0]):
 print(f"\n  NOT_FOUND sentinel preserved: "
       f"{res['metadatas'][0][0]['hardness_HB'] == db.NOT_FOUND}")
 
+# data_confidence is what the card uses to say whether a number came from an ASME
+# table or is my estimate. It rides along with every other column, so the only way
+# it can go missing is a row written before the column existed - check it here
+# rather than shipping an index where the claim has silently disappeared.
+conf = [m.get("data_confidence") for m in metadatas]
+missing = [i for i, c in zip(ids, conf) if c in (None, db.NOT_FOUND)]
+print(f"  data_confidence indexed: {len(conf) - len(missing)}/{len(conf)}")
+for value in db.DATA_CONFIDENCE_VALUES:
+    print(f"    {value:<24} {conf.count(value)}")
+if missing:
+    print(f"    WARNING: no confidence on {len(missing)} row(s): {missing[:5]}")
+    print("    Run: py migrate_add_confidence.py")
+
 print("\n" + "=" * 60)
 print(f"Index rebuilt: {count} vectors in {CHROMA_DIR}")
 print("=" * 60)
