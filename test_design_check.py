@@ -341,17 +341,35 @@ for m in materials:
 
 check("every material runs without raising", not errors,
       "; ".join(f"{i}: {e}" for i, e in errors[:3]))
-check("62 rows check against yield", len(yielded) == 62, f"got {len(yielded)}")
-check("4 rows with no yield point fall back to ultimate", len(ultimate) == 4,
+# What the split *should* be, read straight off the columns. Derived rather
+# than hardcoded: a row count pinned to the size of the dataset turns this
+# suite red every time a material is added, which says nothing about whether
+# design_check still picks the right basis. Reading the raw columns here is an
+# independent path from the logic under test, so the cross-check still bites.
+def _has_usable_yield(m):
+    v = m.get("yield_strength_MPa")
+    return v is not None and v > 0        # 0.0 means "no yield point" (gray iron)
+
+exp_yield     = [m for m in materials if _has_usable_yield(m)]
+exp_ultimate  = [m for m in materials if not _has_usable_yield(m)
+                 and m.get("ultimate_tensile_strength_MPa") is not None]
+exp_nofatigue = [m for m in materials if m.get("fatigue_limit_MPa") is None]
+
+check(f"{len(exp_yield)} rows check against yield",
+      len(yielded) == len(exp_yield), f"got {len(yielded)}")
+check(f"{len(exp_ultimate)} rows with no yield point fall back to ultimate",
+      len(ultimate) == len(exp_ultimate),
       ", ".join(m["material_id"] for m in ultimate))
-check("the 4 are the 3 ceramics plus gray cast iron",
-      {m["material_id"] for m in ultimate} ==
-      {"cer_alumina_96", "cer_sic", "cer_borosilicate_glass", "ci_gray_class30"},
+check("every ultimate-basis row is a ceramic or gray cast iron",
+      all(str(m["material_class"]).startswith("ceramic")
+          or m["material_id"] == "ci_gray_class30" for m in ultimate),
       ", ".join(sorted(m["material_id"] for m in ultimate)))
+check("gray cast iron's stored 0.0 yield is read as no yield point",
+      "ci_gray_class30" in {m["material_id"] for m in ultimate})
 check("no material is left without any strength basis", not unknown,
       ", ".join(m["material_id"] for m in unknown))
-check("19 rows are gated out of the fatigue check", len(no_fatigue) == 19,
-      f"got {len(no_fatigue)}")
+check(f"{len(exp_nofatigue)} rows are gated out of the fatigue check",
+      len(no_fatigue) == len(exp_nofatigue), f"got {len(no_fatigue)}")
 check("every material has a modulus, so deflection always computes",
       not no_deflection, ", ".join(m["material_id"] for m in no_deflection))
 

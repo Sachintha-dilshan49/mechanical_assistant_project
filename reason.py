@@ -614,6 +614,7 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
         "understood": None,
         "materials": [],
         "stress_lookups": {},
+        "stress_gaps": {},
         "summary": "",
         "reasoning": {},
         "warning": None,
@@ -788,20 +789,38 @@ def reason_about_query(user_query: str, top_k: int = 3, history: list = None,
     result["reasoning"] = reasoning
 
     # Step 4: Allowable-stress lookups for the SELECTED materials (database only).
+    # Only 7 of the 66 materials have a stress table, so a miss is the normal
+    # case, not the exception. Record WHY each miss happened in stress_gaps:
+    # a card that just omits the stress row reads as "checked, nothing to
+    # report", and the student has no way to tell that apart from a real pass.
     temp_C = constraints.get("temperature_C")
     if temp_C is not None:
         step("Looking up allowable stress at temperature...")
         for mat in selected:
-            stress_table_id = mat.get("stress_table_id", "")
-            if stress_table_id:
-                stress_info = get_allowable_stress(stress_table_id, float(temp_C))
-                if stress_info and stress_info.get("stress_MPa") is not None:
-                    result["stress_lookups"][mat["material_id"]] = {
-                        "stress_MPa": stress_info["stress_MPa"],
-                        "source": stress_info["source"],
-                        "interpolated": stress_info.get("interpolated", False),
-                        "temperature_C": temp_C,
-                    }
+            # NOT_FOUND, not "", is what a material without a table carries here.
+            stress_table_id = _txt(mat, "stress_table_id", 64)
+            if not stress_table_id:
+                result["stress_gaps"][mat["material_id"]] = {"reason": "no_table"}
+                continue
+            stress_info = get_allowable_stress(stress_table_id, float(temp_C))
+            if stress_info and stress_info.get("stress_MPa") is not None:
+                result["stress_lookups"][mat["material_id"]] = {
+                    "stress_MPa": stress_info["stress_MPa"],
+                    "source": stress_info["source"],
+                    "interpolated": stress_info.get("interpolated", False),
+                    "temperature_C": temp_C,
+                }
+            elif stress_info and stress_info.get("error"):
+                # The table exists but stops short of this temperature - a
+                # different fact from having no table at all, and a more
+                # alarming one, so it is passed through verbatim.
+                result["stress_gaps"][mat["material_id"]] = {
+                    "reason": "out_of_range",
+                    "error": stress_info["error"],
+                }
+            else:
+                # Table id references nothing in allowable_stress (dangling).
+                result["stress_gaps"][mat["material_id"]] = {"reason": "no_table"}
 
     return result
 

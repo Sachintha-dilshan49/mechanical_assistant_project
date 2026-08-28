@@ -540,6 +540,11 @@ def render_result(result):
                     )
     
     # --- Material cards ---
+    # Whether the query constrained temperature at all. Without one there is no
+    # allowable-stress question to answer, so the cards say nothing about it.
+    query_temp_C = (result.get("understood") or {}).get(
+        "extracted_constraints", {}).get("temperature_C")
+
     st.markdown('<div class="sec">Recommendations</div>', unsafe_allow_html=True)
 
     for i, mat in enumerate(materials):
@@ -688,6 +693,24 @@ def render_result(result):
                     f'{esc(stress_info.get("stress_MPa"))} MPa{interp_note}<br>'
                     f'<span class="muted">Source: {esc(stress_info.get("source"))}</span>'
                     f'</div>',
+                    unsafe_allow_html=True
+                )
+            # No stress row, but a temperature WAS asked about. Say so. Most
+            # materials here have no ASME table, so an absent stress row is
+            # indistinguishable from a check that came back clean - and a
+            # student reading a silent card may believe the temperature was
+            # verified. Naming the gap is the honest failure mode.
+            elif query_temp_C is not None:
+                gap = result.get("stress_gaps", {}).get(mat_id, {})
+                if gap.get("error"):
+                    message = (f'{esc(gap["error"])} - check ASME BPVC II-D '
+                               f'yourself for this temperature.')
+                else:
+                    message = ('No allowable-stress table for this material - '
+                               'check ASME BPVC II-D yourself.')
+                st.markdown(
+                    f'<div class="note"><b>Allowable stress at '
+                    f'{esc(query_temp_C)}°C: not checked.</b><br>{message}</div>',
                     unsafe_allow_html=True
                 )
 
